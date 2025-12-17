@@ -10,10 +10,51 @@ import {
   DoctorInfo,
 } from '@/types';
 
+// Map external API endpoints to local API routes
+const getApiUrl = (endpoint: string) => {
+  if (typeof window === 'undefined') {
+    // Server-side: use external API directly
+    return `${API_BASE_URL}${endpoint}`;
+  }
+  // Client-side: use local API routes
+  // Map /api/v1/auth/* to /api/auth/*
+  const localEndpoint = endpoint.replace('/api/v1/auth', '/auth');
+  return `/api${localEndpoint}`;
+};
+
+// Helper function to parse error responses
+function parseErrorResponse(error: any): string {
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  // Handle validation errors (422) - detail is an array
+  if (error.detail && Array.isArray(error.detail)) {
+    const messages = error.detail.map((err: any) => {
+      const loc = Array.isArray(err.loc) ? err.loc.join('.') : '';
+      const msg = err.msg || 'Validation error';
+      return loc ? `${loc}: ${msg}` : msg;
+    });
+    return messages.join('; ');
+  }
+
+  // Handle string detail
+  if (error.detail && typeof error.detail === 'string') {
+    return error.detail;
+  }
+
+  // Handle message field
+  if (error.message) {
+    return error.message;
+  }
+
+  return 'An error occurred';
+}
+
 class AuthService {
   async signup(data: SignupRequest): Promise<AuthResponse> {
     try {
-      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.SIGNUP}`, {
+      const response = await fetch(getApiUrl(API_ENDPOINTS.SIGNUP), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -23,20 +64,29 @@ class AuthService {
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Signup failed');
+        let error: any;
+        try {
+          error = await response.json();
+        } catch {
+          error = { detail: `Signup failed with status ${response.status}` };
+        }
+        const errorMessage = parseErrorResponse(error);
+        throw new Error(errorMessage);
       }
 
       return await response.json();
     } catch (error) {
       console.error('Signup error:', error);
-      throw error;
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Signup failed');
     }
   }
 
   async login(data: LoginRequest): Promise<AuthResponse> {
     try {
-      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.LOGIN}`, {
+      const response = await fetch(getApiUrl(API_ENDPOINTS.LOGIN), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -46,20 +96,29 @@ class AuthService {
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Login failed');
+        let error: any;
+        try {
+          error = await response.json();
+        } catch {
+          error = { detail: `Login failed with status ${response.status}` };
+        }
+        const errorMessage = parseErrorResponse(error);
+        throw new Error(errorMessage);
       }
 
       return await response.json();
     } catch (error) {
       console.error('Login error:', error);
-      throw error;
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Login failed');
     }
   }
 
   async logout(refreshToken: string): Promise<void> {
     try {
-      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.LOGOUT}`, {
+      const response = await fetch(getApiUrl(API_ENDPOINTS.LOGOUT), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -78,7 +137,7 @@ class AuthService {
 
   async refreshToken(refreshToken: string): Promise<RefreshResponse> {
     try {
-      const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.REFRESH}`, {
+      const response = await fetch(getApiUrl(API_ENDPOINTS.REFRESH), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -88,14 +147,57 @@ class AuthService {
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Token refresh failed');
+        let error: any;
+        try {
+          error = await response.json();
+        } catch {
+          error = { detail: `Token refresh failed with status ${response.status}` };
+        }
+        const errorMessage = parseErrorResponse(error);
+        throw new Error(errorMessage);
       }
 
       return await response.json();
     } catch (error) {
       console.error('Token refresh error:', error);
-      throw error;
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Token refresh failed');
+    }
+  }
+
+  async getProfile(accessToken: string): Promise<DoctorInfo> {
+    try {
+      const response = await fetch(getApiUrl(API_ENDPOINTS.PROFILE), {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('Unauthorized - Please login again');
+        }
+        let error: any;
+        try {
+          error = await response.json();
+        } catch {
+          error = { detail: `Failed to get profile with status ${response.status}` };
+        }
+        const errorMessage = parseErrorResponse(error);
+        throw new Error(errorMessage);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Get profile error:', error);
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Failed to get profile');
     }
   }
 
@@ -115,7 +217,8 @@ class AuthService {
       }
       if (data.location) queryParams.append('location', data.location);
 
-      const url = `${API_BASE_URL}${API_ENDPOINTS.PROFILE}?${queryParams.toString()}`;
+      const baseUrl = getApiUrl(API_ENDPOINTS.PROFILE);
+      const url = `${baseUrl}?${queryParams.toString()}`;
 
       const response = await fetch(url, {
         method: 'PATCH',
@@ -126,14 +229,26 @@ class AuthService {
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Profile update failed');
+        if (response.status === 401) {
+          throw new Error('Unauthorized - Please login again');
+        }
+        let error: any;
+        try {
+          error = await response.json();
+        } catch {
+          error = { detail: `Profile update failed with status ${response.status}` };
+        }
+        const errorMessage = parseErrorResponse(error);
+        throw new Error(errorMessage);
       }
 
       return await response.json();
     } catch (error) {
       console.error('Profile update error:', error);
-      throw error;
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Profile update failed');
     }
   }
 }

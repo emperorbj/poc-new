@@ -114,7 +114,7 @@ export default function TranscriptionPage() {
             <Button
               onClick={handleStartRecording}
               disabled={isRecording}
-              className="w-full bg-secondary hover:bg-secondary/90"
+              className="w-full bg-indigo-300 hover:bg-secondary/90"
             >
               <Mic className="mr-2" size={20} />
               Start Live Transcription

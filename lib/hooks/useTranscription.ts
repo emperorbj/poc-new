@@ -39,6 +39,17 @@ export function useTranscription() {
   }, []);
 
   const handleTranscription = (message: TranscriptionMessage) => {
+    // Log the complete message object from websocket
+    console.log('📨 Full WebSocket Transcription Message:', {
+      type: message.type,
+      transcript: message.transcript,
+      is_final: message.is_final,
+      confidence: message.confidence,
+      speaker_tag: message.speaker_tag,
+      message: message.message,
+      fullMessage: message, // Complete message object
+    });
+
     if (!message.transcript) return;
 
     if (message.is_final) {
@@ -51,12 +62,26 @@ export function useTranscription() {
         timestamp: new Date(),
       };
 
-      setTranscriptions((prev) => [...prev, newTranscription]);
+      setTranscriptions((prev) => {
+        const updated = [...prev, newTranscription];
+        // Log the complete accumulated transcription
+        const fullTranscription = updated.map((t) => t.text).join(' ');
+        console.log('📝 Final transcription added:', {
+          newText: message.transcript,
+          fullTranscription: fullTranscription,
+          totalTranscriptions: updated.length,
+          allTranscriptions: updated,
+        });
+        return updated;
+      });
       setCurrentInterim('');
-      console.log('📝 Final transcription:', message.transcript);
     } else {
       setCurrentInterim(message.transcript);
-      console.log('💬 Interim transcription:', message.transcript);
+      console.log('💬 Interim transcription:', {
+        text: message.transcript,
+        confidence: message.confidence,
+        speaker_tag: message.speaker_tag,
+      });
     }
   };
 
