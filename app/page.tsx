@@ -17,7 +17,7 @@ export default function WelcomePage() {
           <div className="flex justify-center">
             <div className="w-24 h-24 bg-primary rounded-full flex items-center justify-center overflow-hidden">
               {/* Replace with your actual logo */}
-               <div className="flex justify-center mb-6">
+               <div className="flex justify-center">
             <img
               src="/new-logo.png"
               alt="Humaein Logo"
