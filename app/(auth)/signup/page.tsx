@@ -94,9 +94,11 @@ export default function SignupPage() {
         {/* Logo */}
         <div className="text-center">
           <div className="flex justify-center mb-6">
-            <div className="w-24 h-24 bg-primary rounded-full flex items-center justify-center">
-              <span className="text-4xl font-bold text-white">H</span>
-            </div>
+            <img
+              src="/new-logo.png"
+              alt="Humaein Logo"
+              className="w-24 h-24 object-contain"
+            />
           </div>
           <h1 className="text-3xl font-bold text-gray-800 mb-2">Create Account</h1>
           <p className="text-gray-500">Join Humaein to get started</p>
