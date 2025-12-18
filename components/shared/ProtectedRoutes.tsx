@@ -1,7 +1,7 @@
 // components/shared/ProtectedRoute.tsx
 'use client';
 
-import { useLayoutEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useStore } from '@/lib/store/useStore';
 
@@ -11,16 +11,28 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useStore((state) => state.isAuthenticated);
   const isInitialized = useStore((state) => state.isInitialized);
   const isProfileComplete = useStore((state) => state.isProfileComplete);
+  const [isMounted, setIsMounted] = useState(false);
+  const [shouldRedirect, setShouldRedirect] = useState(false);
   const hasRedirectedRef = useRef(false);
   const lastPathRef = useRef<string | null>(null);
 
-  // Compute redirect target synchronously
-  let redirectTarget: string | null = null;
+  // Set mounted flag after hydration
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
-  if (isInitialized) {
+  // Compute redirect target and handle redirects
+  useEffect(() => {
+    if (!isMounted || !isInitialized) {
+      setShouldRedirect(false);
+      return;
+    }
+
     const isAuthPage = pathname?.startsWith('/login') || pathname?.startsWith('/signup');
     const isDashboardPage = pathname?.startsWith('/consultations') || pathname?.startsWith('/profile');
     const isTenantSetup = pathname?.startsWith('/tenant-setup');
+
+    let redirectTarget: string | null = null;
 
     if (!isAuthenticated && (isDashboardPage || isTenantSetup)) {
       redirectTarget = '/';
@@ -30,15 +42,6 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
       if (isAuthPage || pathname === '/' || isTenantSetup) {
         redirectTarget = '/consultations';
       }
-    }
-  }
-
-  // Use useLayoutEffect to redirect synchronously before paint
-  useLayoutEffect(() => {
-    if (!isInitialized) {
-      hasRedirectedRef.current = false;
-      lastPathRef.current = null;
-      return;
     }
 
     // Reset redirect flag if pathname changed (navigation completed)
@@ -50,13 +53,26 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
     // Only redirect if we have a target, we're not already there, and we haven't redirected yet
     if (redirectTarget && redirectTarget !== pathname && !hasRedirectedRef.current) {
       hasRedirectedRef.current = true;
+      setShouldRedirect(true);
       console.log('🔄 Redirecting to:', redirectTarget);
-      router.replace(redirectTarget);
-    }
-  }, [redirectTarget, pathname, isInitialized, router]);
+      
+      // Use setTimeout to defer redirect and prevent render conflicts
+      const timeoutId = setTimeout(() => {
+        router.replace(redirectTarget!);
+        // Reset redirect state after navigation
+        setTimeout(() => {
+          setShouldRedirect(false);
+        }, 100);
+      }, 0);
 
-  // Show loading if not initialized or if we need to redirect
-  if (!isInitialized || (redirectTarget && redirectTarget !== pathname)) {
+      return () => clearTimeout(timeoutId);
+    } else {
+      setShouldRedirect(false);
+    }
+  }, [isMounted, isInitialized, isAuthenticated, isProfileComplete, pathname, router]);
+
+  // Show loading during initialization or when redirecting
+  if (!isMounted || !isInitialized || shouldRedirect) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>

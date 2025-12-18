@@ -59,6 +59,7 @@ export interface Patient {
     specialty: string;
     email: string;
     password: string;
+    role: 'user' | 'admin';
   }
   
   export type FilterType = 'All' | 'Pending' | 'Completed';
@@ -66,9 +67,9 @@ export interface Patient {
   // API Types
   export interface SignupRequest {
     name: string;
-    specialty: string;
     email: string;
     password: string;
+    role: 'user' | 'admin';
   }
   
   export interface LoginRequest {
@@ -79,13 +80,15 @@ export interface Patient {
   export interface DoctorInfo {
     id: number;
     name: string;
-    specialty: string;
     email: string;
+    role: string;
+    created_at: string;
+    updated_at: string;
+    specialty?: string | null;
     clinic_name?: string | null;
     medical_registration_number?: string | null;
     experience?: number | null;
     location?: string | null;
-    created_at: string;
   }
   
   export interface AuthResponse {
@@ -101,9 +104,10 @@ export interface Patient {
   }
   
   export interface UpdateProfileRequest {
-    clinic_name?: string;
+    name?: string;
+    specialty?: string;
     medical_registration_number?: string;
-    experience?: number;
+    experience?: string;
     location?: string;
   }
   

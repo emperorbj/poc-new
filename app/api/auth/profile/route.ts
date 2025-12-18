@@ -49,22 +49,16 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
-    const { searchParams } = new URL(request.url);
-    const queryParams = new URLSearchParams();
+    const body = await request.json();
 
-    // Forward query parameters
-    searchParams.forEach((value, key) => {
-      queryParams.append(key, value);
-    });
-
-    const url = `${API_BASE_URL}${API_ENDPOINTS.PROFILE}?${queryParams.toString()}`;
-
-    const response = await fetch(url, {
+    const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.PROFILE}`, {
       method: 'PATCH',
       headers: {
+        'Content-Type': 'application/json',
         Accept: 'application/json',
         Authorization: authHeader,
       },
+      body: JSON.stringify(body),
     });
 
     const data = await response.json();

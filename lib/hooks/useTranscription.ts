@@ -94,17 +94,32 @@ export function useTranscription() {
         console.log('🔌 Connecting WebSocket...');
         connectWebSocket();
 
-        // Wait for connection
+        // Wait for connection with longer timeout
         let attempts = 0;
-        const maxAttempts = 10;
+        const maxAttempts = 20; // Increased from 10 to 20 (10 seconds total)
         while (!transcriptionService.isConnected() && attempts < maxAttempts) {
           await new Promise((resolve) => setTimeout(resolve, 500));
           attempts++;
+          // Log progress every 2 seconds
+          if (attempts % 4 === 0) {
+            console.log(`⏳ Still connecting... (${attempts * 0.5}s)`);
+          }
         }
       }
 
       if (!transcriptionService.isConnected()) {
-        setError('Failed to connect to transcription service');
+        const errorMsg = 'Failed to connect to transcription service. Please check your internet connection and try again.';
+        console.error('❌', errorMsg);
+        setError(errorMsg);
+        setIsConnected(false);
+        return;
+      }
+
+      console.log('✅ WebSocket is connected, proceeding with microphone access...');
+
+      // Check if getUserMedia is available
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setError('Microphone access is not available in this browser. Please use a modern browser like Chrome, Firefox, or Edge.');
         return;
       }
 
@@ -167,9 +182,22 @@ export function useTranscription() {
       console.log('✅ Recording started');
     } catch (err) {
       console.error('❌ Error starting recording:', err);
-      const errorMessage =
-        err instanceof Error ? err.message : 'Failed to start recording';
+      let errorMessage = 'Failed to start recording';
+      
+      if (err instanceof Error) {
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          errorMessage = 'Microphone permission denied. Please allow microphone access and try again.';
+        } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+          errorMessage = 'No microphone found. Please connect a microphone and try again.';
+        } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+          errorMessage = 'Microphone is being used by another application. Please close other apps and try again.';
+        } else {
+          errorMessage = err.message || 'Failed to start recording';
+        }
+      }
+      
       setError(errorMessage);
+      setIsRecording(false);
     }
   };
 

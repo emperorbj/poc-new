@@ -26,6 +26,7 @@ export default function SignupPage() {
     email: '',
     password: '',
     confirmPassword: '',
+    role: 'user' as 'user' | 'admin',
   });
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -55,7 +56,7 @@ export default function SignupPage() {
     e.preventDefault();
     setError('');
 
-    if (!formData.doctorName || !formData.specialty || !formData.email || !formData.password) {
+    if (!formData.doctorName || !formData.specialty || !formData.email || !formData.password || !formData.role) {
       setError('Please fill in all required fields');
       return;
     }
@@ -78,6 +79,7 @@ export default function SignupPage() {
         specialty: formData.specialty,
         email: formData.email,
         password: formData.password,
+        role: formData.role,
       });
 
       router.replace('/tenant-setup');
@@ -155,6 +157,23 @@ export default function SignupPage() {
               disabled={isLoading}
               className="mt-2"
             />
+          </div>
+
+          <div>
+            <Label htmlFor="role">Role *</Label>
+            <Select
+              value={formData.role}
+              onValueChange={(value: 'user' | 'admin') => setFormData({ ...formData, role: value })}
+              disabled={isLoading}
+            >
+              <SelectTrigger className="mt-2">
+                <SelectValue placeholder="Select your role" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="user">User</SelectItem>
+                <SelectItem value="admin">Admin</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           <div>

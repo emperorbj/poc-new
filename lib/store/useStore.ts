@@ -61,9 +61,9 @@ export const useStore = create<AppState>((set, get) => ({
 
       const response = await authService.signup({
         name: userData.doctorName,
-        specialty: userData.specialty,
         email: userData.email,
         password: userData.password,
+        role: userData.role,
       });
 
       tokenStorage.setTokens(response.access_token, response.refresh_token);
@@ -201,22 +201,50 @@ export const useStore = create<AppState>((set, get) => ({
 
   setTenantDetails: async (details) => {
     try {
-      const { accessToken } = get();
+      const { accessToken, doctorInfo, userRegistration } = get();
 
       if (!accessToken) {
         throw new Error('No access token available');
       }
 
-      const experienceNumber = EXPERIENCE_MAP[details.yearsOfExperience] || 0;
+      // Validate required fields
+      if (!details.medicalRegistrationNumber || !details.yearsOfExperience || !details.locationName) {
+        throw new Error('Please fill in all required fields');
+      }
 
+      // API expects experience as string (number as string)
+      const experienceNumber = EXPERIENCE_MAP[details.yearsOfExperience];
+      if (experienceNumber === undefined) {
+        throw new Error('Invalid years of experience selected');
+      }
+      
+      // Get name and specialty from available sources, but don't send empty strings
+      const doctorName = details.doctorName || doctorInfo?.name || userRegistration?.doctorName;
+      const doctorSpecialty = details.specialty || doctorInfo?.specialty || userRegistration?.specialty;
+      
+      if (!doctorName || !doctorSpecialty) {
+        throw new Error('Doctor name and specialty are required');
+      }
+      
       const updateData: UpdateProfileRequest = {
-        clinic_name: details.clinicName,
-        medical_registration_number: details.medicalRegistrationNumber,
-        experience: experienceNumber,
-        location: details.locationName,
+        name: doctorName,
+        specialty: doctorSpecialty,
+        medical_registration_number: details.medicalRegistrationNumber.trim(),
+        experience: experienceNumber.toString(), // API expects string (number as string)
+        location: details.locationName.trim(),
       };
 
       console.log('📤 Updating profile with:', updateData);
+      console.log('🔑 Using access token:', accessToken ? `${accessToken.substring(0, 20)}...` : 'MISSING');
+
+      // Try to refresh the profile first to ensure session is fresh (workaround for backend session issue)
+      try {
+        await authService.getProfile(accessToken);
+        console.log('✅ Profile session refreshed');
+      } catch (refreshError) {
+        console.warn('⚠️ Could not refresh profile before update:', refreshError);
+        // Continue anyway - this is just a workaround attempt
+      }
 
       const updatedDoctor = await authService.updateProfile(accessToken, updateData);
 

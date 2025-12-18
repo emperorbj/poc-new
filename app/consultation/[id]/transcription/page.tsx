@@ -1,7 +1,7 @@
 // app/consultation/[id]/transcription/page.tsx
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { useStore } from '@/lib/store/useStore';
 import { useTranscription } from '@/lib/hooks/useTranscription';
@@ -11,13 +11,17 @@ import { Card } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Mic, Square, Loader2, AlertCircle, Info } from 'lucide-react';
+import { Mic, Square, Loader2, AlertCircle, Info, Trash2, Clock } from 'lucide-react';
 
 export default function TranscriptionPage() {
   const router = useRouter();
   const params = useParams();
   const consultationId = params.id as string;
   const [notes, setNotes] = useState('');
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const currentConsultation = useStore((state) => state.currentConsultation);
   const updateConsultation = useStore((state) => state.updateConsultation);
 
@@ -31,6 +35,60 @@ export default function TranscriptionPage() {
     stopRecording,
     clearTranscriptions,
   } = useTranscription();
+
+  // Auto-scroll to bottom when new transcriptions arrive
+  useEffect(() => {
+    if (scrollAreaRef.current) {
+      const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      }
+    }
+  }, [transcriptions, currentInterim]);
+
+  // Track recording duration
+  useEffect(() => {
+    if (isRecording) {
+      setRecordingDuration(0);
+      durationIntervalRef.current = setInterval(() => {
+        setRecordingDuration((prev) => prev + 1);
+      }, 1000);
+    } else {
+      if (durationIntervalRef.current) {
+        clearInterval(durationIntervalRef.current);
+        durationIntervalRef.current = null;
+      }
+    }
+
+    return () => {
+      if (durationIntervalRef.current) {
+        clearInterval(durationIntervalRef.current);
+      }
+    };
+  }, [isRecording]);
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const handleClear = () => {
+    if (showClearConfirm) {
+      clearTranscriptions();
+      setShowClearConfirm(false);
+    } else {
+      setShowClearConfirm(true);
+      setTimeout(() => setShowClearConfirm(false), 3000);
+    }
+  };
+
+  const getWordCount = () => {
+    const allText = [...transcriptions.map((t) => t.text), currentInterim]
+      .filter(Boolean)
+      .join(' ');
+    return allText.split(/\s+/).filter((word) => word.length > 0).length;
+  };
 
   if (!currentConsultation) {
     router.back();
@@ -49,6 +107,11 @@ export default function TranscriptionPage() {
     if (isRecording) {
       alert('Please stop the recording before finishing.');
       return;
+    }
+
+    if (transcriptions.length === 0 && !notes.trim()) {
+      const proceed = confirm('No transcription or notes recorded. Do you want to continue anyway?');
+      if (!proceed) return;
     }
 
     const fullTranscription = transcriptions.map((t) => t.text).join(' ');
@@ -94,8 +157,22 @@ export default function TranscriptionPage() {
           <Alert>
             <Info className="h-4 w-4" />
             <AlertDescription>
-              Tap &quot;Start Live Transcription&quot; to begin recording. Make sure you&apos;re in a quiet
-              environment for best results.
+              <div className="space-y-1">
+                <p>Tap &quot;Start Live Transcription&quot; to begin recording.</p>
+                <p className="text-xs opacity-90">
+                  💡 Tips: Ensure you&apos;re in a quiet environment and speak clearly for best results.
+                </p>
+              </div>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Connection Status */}
+        {isConnected && !isRecording && transcriptions.length === 0 && (
+          <Alert className="bg-green-50 border-green-200">
+            <Info className="h-4 w-4 text-green-600" />
+            <AlertDescription className="text-green-800">
+              Ready to record. Click &quot;Start Live Transcription&quot; when ready.
             </AlertDescription>
           </Alert>
         )}
@@ -104,7 +181,20 @@ export default function TranscriptionPage() {
         {error && (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
-            <AlertDescription>{error}</AlertDescription>
+            <AlertDescription>
+              <div className="space-y-2">
+                <p className="font-semibold">Transcription Error</p>
+                <p className="text-sm">{error}</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => window.location.reload()}
+                  className="mt-2"
+                >
+                  Reload Page
+                </Button>
+              </div>
+            </AlertDescription>
           </Alert>
         )}
 
@@ -121,6 +211,21 @@ export default function TranscriptionPage() {
             </Button>
           ) : (
             <div className="space-y-4">
+              <div className="flex items-center justify-center gap-3 p-4 bg-red-50 rounded-lg border-2 border-red-200">
+                <div className="relative">
+                  <div className="w-4 h-4 bg-red-500 rounded-full animate-pulse" />
+                  <div className="absolute inset-0 w-4 h-4 bg-red-500 rounded-full animate-ping opacity-75" />
+                </div>
+                <div className="flex-1 text-center">
+                  <div className="flex items-center justify-center gap-2">
+                    <Clock className="w-4 h-4 text-red-600" />
+                    <span className="text-lg font-bold text-red-600">
+                      {formatDuration(recordingDuration)}
+                    </span>
+                  </div>
+                  <span className="text-sm text-red-600 font-medium">Recording in progress</span>
+                </div>
+              </div>
               <Button
                 onClick={handleStopRecording}
                 variant="destructive"
@@ -129,33 +234,36 @@ export default function TranscriptionPage() {
                 <Square className="mr-2" size={20} />
                 Stop Recording
               </Button>
-
-              <div className="flex items-center justify-center gap-2 text-gray-600">
-                <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
-                <span className="text-sm font-medium">Recording...</span>
-              </div>
             </div>
           )}
         </Card>
 
         {/* Live Transcription Display */}
-        {(transcriptions.length > 0 || currentInterim) && (
+        {(transcriptions.length > 0 || currentInterim || isRecording) && (
           <Card className="p-4">
             <div className="flex justify-between items-center mb-3">
-              <h2 className="text-lg font-semibold">Live Transcription</h2>
+              <div>
+                <h2 className="text-lg font-semibold">Live Transcription</h2>
+                {(transcriptions.length > 0 || currentInterim) && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    {getWordCount()} words • {transcriptions.length} final segments
+                  </p>
+                )}
+              </div>
               {transcriptions.length > 0 && (
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={clearTranscriptions}
-                  className="text-primary"
+                  onClick={handleClear}
+                  className={showClearConfirm ? 'text-red-600' : 'text-primary'}
                 >
-                  Clear
+                  <Trash2 className="mr-1" size={16} />
+                  {showClearConfirm ? 'Confirm Clear' : 'Clear'}
                 </Button>
               )}
             </div>
 
-            <ScrollArea className="h-64 border rounded-lg p-3 bg-gray-50">
+            <ScrollArea ref={scrollAreaRef} className="h-64 border rounded-lg p-3 bg-gray-50">
               {/* Final Transcriptions */}
               {transcriptions.map((t) => (
                 <div key={t.id} className="mb-3 p-3 bg-green-50 rounded-lg border-l-4 border-secondary">
@@ -205,13 +313,20 @@ export default function TranscriptionPage() {
         </Card>
 
         {/* Finish Button */}
-        <Button
-          onClick={handleFinish}
-          disabled={isRecording}
-          className="w-full bg-primary hover:bg-primary/90"
-        >
-          {isRecording ? 'Stop Recording First' : 'Continue to Summary'}
-        </Button>
+        <div className="space-y-2">
+          {transcriptions.length > 0 && (
+            <div className="text-center text-sm text-gray-600">
+              {transcriptions.length} transcription{transcriptions.length !== 1 ? 's' : ''} recorded
+            </div>
+          )}
+          <Button
+            onClick={handleFinish}
+            disabled={isRecording}
+            className="w-full bg-primary hover:bg-primary/90"
+          >
+            {isRecording ? 'Stop Recording First' : 'Continue to Summary'}
+          </Button>
+        </div>
       </div>
     </div>
   );

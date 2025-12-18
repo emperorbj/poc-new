@@ -206,26 +206,46 @@ class AuthService {
     data: UpdateProfileRequest
   ): Promise<DoctorInfo> {
     try {
-      const queryParams = new URLSearchParams();
-
-      if (data.clinic_name) queryParams.append('clinic_name', data.clinic_name);
-      if (data.medical_registration_number) {
-        queryParams.append('medical_registration_number', data.medical_registration_number);
+      // Build request body with only non-empty fields
+      const body: Record<string, string> = {};
+      
+      // Only include fields that have actual values (not empty strings or undefined)
+      if (data.name !== undefined && data.name.trim() !== '') {
+        body.name = data.name.trim();
       }
-      if (data.experience !== undefined) {
-        queryParams.append('experience', data.experience.toString());
+      if (data.specialty !== undefined && data.specialty.trim() !== '') {
+        body.specialty = data.specialty.trim();
       }
-      if (data.location) queryParams.append('location', data.location);
+      if (data.medical_registration_number !== undefined && data.medical_registration_number.trim() !== '') {
+        body.medical_registration_number = data.medical_registration_number.trim();
+      }
+      if (data.experience !== undefined && data.experience.trim() !== '') {
+        body.experience = data.experience.trim(); // API expects string
+      }
+      if (data.location !== undefined && data.location.trim() !== '') {
+        body.location = data.location.trim();
+      }
 
-      const baseUrl = getApiUrl(API_ENDPOINTS.PROFILE);
-      const url = `${baseUrl}?${queryParams.toString()}`;
+      // Ensure we have at least one field to update
+      if (Object.keys(body).length === 0) {
+        throw new Error('No valid fields provided for profile update');
+      }
 
-      const response = await fetch(url, {
+      console.log('📤 Sending profile update request:', {
+        url: getApiUrl(API_ENDPOINTS.PROFILE),
+        method: 'PATCH',
+        body: body,
+        hasAuth: !!accessToken,
+      });
+
+      const response = await fetch(getApiUrl(API_ENDPOINTS.PROFILE), {
         method: 'PATCH',
         headers: {
+          'Content-Type': 'application/json',
           Accept: 'application/json',
           Authorization: `Bearer ${accessToken}`,
         },
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
@@ -235,6 +255,10 @@ class AuthService {
         let error: any;
         try {
           error = await response.json();
+          console.error('❌ Profile update API error response:', {
+            status: response.status,
+            error: error,
+          });
         } catch {
           error = { detail: `Profile update failed with status ${response.status}` };
         }
