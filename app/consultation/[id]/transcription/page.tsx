@@ -1,4 +1,4 @@
-// app/consultation/[id]/transcription/page.tsx
+// app/consultation/[id]/transcription/page.ts
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
@@ -430,7 +430,7 @@ export default function TranscriptionPage() {
                       <div>
                         <p className="text-xs font-semibold text-primary mb-1">History:</p>
                         <ul className="list-disc list-inside text-sm text-gray-800">
-                          {summary.history.map((item, idx) => (
+                          {summary.history.map((item: string, idx: number) => (
                             <li key={idx}>{item}</li>
                           ))}
                         </ul>
@@ -440,7 +440,7 @@ export default function TranscriptionPage() {
                       <div>
                         <p className="text-xs font-semibold text-primary mb-1">Examination:</p>
                         <ul className="list-disc list-inside text-sm text-gray-800">
-                          {summary.examination.map((item, idx) => (
+                          {summary.examination.map((item: string, idx: number) => (
                             <li key={idx}>{item}</li>
                           ))}
                         </ul>
@@ -450,7 +450,7 @@ export default function TranscriptionPage() {
                       <div>
                         <p className="text-xs font-semibold text-primary mb-1">Diagnosis:</p>
                         <ul className="list-disc list-inside text-sm text-gray-800">
-                          {summary.diagnosis.map((item, idx) => (
+                          {summary.diagnosis.map((item: string, idx: number) => (
                             <li key={idx}>{item}</li>
                           ))}
                         </ul>
@@ -460,7 +460,7 @@ export default function TranscriptionPage() {
                       <div>
                         <p className="text-xs font-semibold text-primary mb-1">Treatment:</p>
                         <ul className="list-disc list-inside text-sm text-gray-800">
-                          {summary.treatment.map((item, idx) => (
+                          {summary.treatment.map((item: string, idx: number) => (
                             <li key={idx}>{item}</li>
                           ))}
                         </ul>
@@ -470,7 +470,7 @@ export default function TranscriptionPage() {
                       <div>
                         <p className="text-xs font-semibold text-primary mb-1">Next Steps:</p>
                         <ul className="list-disc list-inside text-sm text-gray-800">
-                          {summary.nextSteps.map((item, idx) => (
+                          {summary.nextSteps.map((item: string, idx: number) => (
                             <li key={idx}>{item}</li>
                           ))}
                         </ul>
