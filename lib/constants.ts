@@ -8,6 +8,7 @@ export const API_ENDPOINTS = {
   LOGOUT: '/api/v1/auth/logout',
   REFRESH: '/api/v1/auth/refresh',
   PROFILE: '/api/v1/auth/profile',
+  TRANSCRIPTION_SUMMARY: '/api/v1/transcription/summary',
 };
 
 export const WS_ENDPOINTS = {

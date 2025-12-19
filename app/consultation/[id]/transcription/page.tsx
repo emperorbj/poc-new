@@ -11,7 +11,7 @@ import { Card } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Mic, Square, Loader2, AlertCircle, Info, Trash2, Clock } from 'lucide-react';
+import { Mic, Square, Loader2, AlertCircle, Info, Trash2, Clock, FileText, RefreshCw } from 'lucide-react';
 
 export default function TranscriptionPage() {
   const router = useRouter();
@@ -31,10 +31,31 @@ export default function TranscriptionPage() {
     transcriptions,
     currentInterim,
     error,
+    summary,
+    isLoadingSummary,
+    summaryError,
+    currentTranscriptId,
     startRecording,
     stopRecording,
     clearTranscriptions,
+    fetchSummary,
   } = useTranscription();
+  
+  const accessToken = useStore((state) => state.accessToken);
+
+  // Automatically fetch summary when transcript_id is available
+  useEffect(() => {
+    if (currentTranscriptId && !summary && !isLoadingSummary && !isRecording && accessToken) {
+      // Small delay to ensure backend has processed the transcription
+      const timer = setTimeout(() => {
+        console.log('🔄 Auto-fetching summary for transcript_id:', currentTranscriptId);
+        fetchSummary(undefined, accessToken);
+      }, 2000); // 2 second delay to allow backend processing
+
+      return () => clearTimeout(timer);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTranscriptId]); // Only depend on currentTranscriptId to avoid infinite loops
 
   // Auto-scroll to bottom when new transcriptions arrive
   useEffect(() => {
@@ -109,19 +130,83 @@ export default function TranscriptionPage() {
       return;
     }
 
-    if (transcriptions.length === 0 && !notes.trim()) {
-      const proceed = confirm('No transcription or notes recorded. Do you want to continue anyway?');
+    // Check if there's any content to save
+    // Include both final transcriptions and interim transcription
+    const hasFinalTranscriptions = transcriptions.length > 0;
+    const hasInterimTranscription = currentInterim && currentInterim.trim().length > 0;
+    const hasTranscriptions = hasFinalTranscriptions || hasInterimTranscription;
+    const hasNotes = notes.trim().length > 0;
+    const hasSummary = summary && (typeof summary === 'string' ? summary.trim().length > 0 : Object.keys(summary).length > 0);
+    const hasContent = hasTranscriptions || hasNotes || hasSummary;
+
+    if (!hasContent) {
+      const proceed = confirm('No transcription, notes, or summary recorded. Do you want to continue anyway?');
       if (!proceed) return;
     }
 
-    const fullTranscription = transcriptions.map((t) => t.text).join(' ');
-    const transcriptionWithNotes = fullTranscription + (notes ? `\n\nNotes: ${notes}` : '');
+    // Build the transcription text
+    // Start with final transcriptions
+    let fullTranscription = transcriptions.map((t) => t.text).join(' ');
+    
+    console.log('📝 Building transcription for save:', {
+      finalTranscriptionsCount: transcriptions.length,
+      finalTranscriptions: transcriptions.map(t => t.text),
+      hasInterim: !!currentInterim,
+      interimText: currentInterim?.substring(0, 100),
+      hasSummary: !!summary,
+      hasNotes: !!notes.trim(),
+    });
+    
+    // Add interim transcription if available (and no final transcriptions, or as additional context)
+    if (currentInterim && currentInterim.trim()) {
+      if (fullTranscription) {
+        fullTranscription += `\n\n[Interim: ${currentInterim}]`;
+      } else {
+        fullTranscription = currentInterim;
+      }
+    }
+    
+    let transcriptionWithNotes = fullTranscription;
+    
+    // Add summary if available (handle both string and object formats)
+    if (summary) {
+      const summaryText = typeof summary === 'string' 
+        ? summary 
+        : JSON.stringify(summary);
+      if (summaryText.trim()) {
+        transcriptionWithNotes += (transcriptionWithNotes ? '\n\n' : '') + `Summary:\n${summaryText}`;
+      }
+    }
+    
+    // Add notes if available
+    if (notes.trim()) {
+      transcriptionWithNotes += (transcriptionWithNotes ? '\n\n' : '') + `Notes: ${notes}`;
+    }
 
-    updateConsultation(currentConsultation.id, {
-      transcription: transcriptionWithNotes,
+    let finalTranscriptionText = transcriptionWithNotes || 'No transcription recorded';
+    
+    // Include transcript_id in the transcription text for reference
+    if (currentTranscriptId) {
+      finalTranscriptionText += `\n\n[transcript_id: ${currentTranscriptId}]`;
+      console.log('📋 Including transcript_id in saved transcription:', currentTranscriptId);
+    } else {
+      console.warn('⚠️ No transcript_id available - summary API call may fail. Backend may not be sending transcript_id yet.');
+    }
+    
+    console.log('💾 Saving transcription:', {
+      length: finalTranscriptionText.length,
+      preview: finalTranscriptionText.substring(0, 200),
+      consultationId: currentConsultation.id,
+      transcriptId: currentTranscriptId,
     });
 
-    router.push(`/consultation/${consultationId}/summary`);
+    updateConsultation(currentConsultation.id, {
+      transcription: finalTranscriptionText,
+    });
+
+    // Navigate to summary page - it will handle fetching the summary
+    // Pass transcript_id via URL params so summary page can fetch it
+    router.push(`/consultation/${consultationId}/summary${currentTranscriptId ? `?transcript_id=${currentTranscriptId}` : ''}`);
   };
 
   const getStatusText = () => {
@@ -296,6 +381,116 @@ export default function TranscriptionPage() {
                 </div>
               )}
             </ScrollArea>
+          </Card>
+        )}
+
+        {/* Summary Section */}
+        {currentTranscriptId && (
+          <Card className="p-4">
+            <div className="flex justify-between items-center mb-3">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <FileText className="w-5 h-5" />
+                Transcription Summary
+              </h2>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => fetchSummary(undefined, accessToken || undefined)}
+                disabled={isLoadingSummary || isRecording}
+                className="flex items-center gap-2"
+              >
+                {isLoadingSummary ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Loading...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="w-4 h-4" />
+                    {summary ? 'Refresh' : 'Get Summary'}
+                  </>
+                )}
+              </Button>
+            </div>
+            
+            {summaryError && (
+              <Alert variant="destructive" className="mb-3">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{summaryError}</AlertDescription>
+              </Alert>
+            )}
+            
+            {summary ? (
+              <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                {typeof summary === 'string' ? (
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap">{summary}</p>
+                ) : (
+                  <div className="space-y-3">
+                    {summary.history && summary.history.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-primary mb-1">History:</p>
+                        <ul className="list-disc list-inside text-sm text-gray-800">
+                          {summary.history.map((item, idx) => (
+                            <li key={idx}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {summary.examination && summary.examination.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-primary mb-1">Examination:</p>
+                        <ul className="list-disc list-inside text-sm text-gray-800">
+                          {summary.examination.map((item, idx) => (
+                            <li key={idx}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {summary.diagnosis && summary.diagnosis.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-primary mb-1">Diagnosis:</p>
+                        <ul className="list-disc list-inside text-sm text-gray-800">
+                          {summary.diagnosis.map((item, idx) => (
+                            <li key={idx}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {summary.treatment && summary.treatment.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-primary mb-1">Treatment:</p>
+                        <ul className="list-disc list-inside text-sm text-gray-800">
+                          {summary.treatment.map((item, idx) => (
+                            <li key={idx}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {summary.nextSteps && summary.nextSteps.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-primary mb-1">Next Steps:</p>
+                        <ul className="list-disc list-inside text-sm text-gray-800">
+                          {summary.nextSteps.map((item, idx) => (
+                            <li key={idx}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 text-center">
+                <p className="text-sm text-gray-500">
+                  {isLoadingSummary 
+                    ? 'Generating summary...' 
+                    : 'Click "Get Summary" to generate a summary of the transcription'}
+                </p>
+                {currentTranscriptId && (
+                  <p className="text-xs text-gray-400 mt-2">Transcript ID: {currentTranscriptId}</p>
+                )}
+              </div>
+            )}
           </Card>
         )}
 

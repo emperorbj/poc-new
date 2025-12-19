@@ -86,14 +86,20 @@ class AuthService {
 
   async login(data: LoginRequest): Promise<AuthResponse> {
     try {
-      const response = await fetch(getApiUrl(API_ENDPOINTS.LOGIN), {
+      const url = getApiUrl(API_ENDPOINTS.LOGIN);
+      console.log('📤 Login API call to:', url);
+      
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
         },
         body: JSON.stringify(data),
+        cache: 'no-store', // Prevent caching
       });
+
+      console.log('📥 Login API response status:', response.status);
 
       if (!response.ok) {
         let error: any;
@@ -106,7 +112,9 @@ class AuthService {
         throw new Error(errorMessage);
       }
 
-      return await response.json();
+      const result = await response.json();
+      console.log('✅ Login API response received');
+      return result;
     } catch (error) {
       console.error('Login error:', error);
       if (error instanceof Error) {
@@ -118,13 +126,19 @@ class AuthService {
 
   async logout(refreshToken: string): Promise<void> {
     try {
-      const response = await fetch(getApiUrl(API_ENDPOINTS.LOGOUT), {
+      // API expects refresh_token as query parameter
+      const baseUrl = getApiUrl(API_ENDPOINTS.LOGOUT);
+      // Handle both relative and absolute URLs
+      const url = baseUrl.startsWith('http') 
+        ? new URL(baseUrl)
+        : new URL(baseUrl, window.location.origin);
+      url.searchParams.append('refresh_token', refreshToken);
+      
+      const response = await fetch(url.toString(), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           Accept: 'application/json',
         },
-        body: JSON.stringify({ refresh_token: refreshToken }),
       });
 
       if (!response.ok) {

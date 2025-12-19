@@ -1,6 +1,6 @@
 // lib/api/transcription.ts
 
-import { WS_ENDPOINTS } from '@/lib/constants';
+import { WS_ENDPOINTS, API_BASE_URL, API_ENDPOINTS } from '@/lib/constants';
 import { TranscriptionMessage } from '@/types';
 
 export interface TranscriptionCallbacks {
@@ -84,7 +84,9 @@ class TranscriptionService {
           console.error('❌ WebSocket connection failed');
           this.callbacks?.onError('Failed to connect to transcription service');
         } else {
-          console.warn('⚠️ WebSocket error (state:', readyState, ')');
+          // For other errors, just log but don't stop transcription
+          // The backend may send error messages via onmessage instead
+          console.warn('⚠️ WebSocket error (state:', readyState, ') - continuing anyway');
         }
       };
 
@@ -139,8 +141,18 @@ class TranscriptionService {
       if (message.type === 'transcription') {
         this.callbacks?.onTranscription(message);
       } else if (message.type === 'error') {
-        console.error('❌ Server error:', message.message);
-        this.callbacks?.onError(message.message || 'Unknown server error');
+        const errorMessage = message.message || 'Unknown server error';
+        console.error('❌ Server error:', errorMessage);
+        
+        // Check if it's the detected_language error - we can continue despite this
+        if (errorMessage.includes('detected_language')) {
+          console.warn('⚠️ detected_language error detected - continuing transcription anyway');
+          // Don't call onError for this specific error, just log it
+          // This allows transcription to continue
+          return;
+        }
+        
+        this.callbacks?.onError(errorMessage);
       } else {
         console.warn('⚠️ Unknown message type:', message.type);
       }
@@ -163,17 +175,30 @@ class TranscriptionService {
     }
 
     try {
-      console.log('📤 Sending audio chunk:', {
-        size: audioBuffer.byteLength,
-        readyState: this.ws.readyState,
-      });
+      // Reduce logging frequency to avoid performance issues
+      // Only log every 10th chunk or if chunk is unusually large/small
+      const shouldLog = Math.random() < 0.1 || audioBuffer.byteLength > 5000 || audioBuffer.byteLength < 100;
+      
+      if (shouldLog) {
+        console.log('📤 Sending audio chunk:', {
+          size: audioBuffer.byteLength,
+          samples: audioBuffer.byteLength / 2, // Int16 = 2 bytes per sample
+          duration_ms: (audioBuffer.byteLength / 2) / 16, // 16kHz = 16000 samples per second
+          readyState: this.ws.readyState,
+        });
+      }
 
       this.ws.send(audioBuffer);
-      console.log('✅ Audio chunk sent successfully');
+      
+      if (shouldLog) {
+        console.log('✅ Audio chunk sent successfully');
+      }
     } catch (error) {
       console.error('❌ Error sending audio:', error);
       const errorMessage = error instanceof Error ? error.message : 'Failed to send audio data';
-      this.callbacks?.onError(errorMessage);
+      // Don't call onError for send failures - just log it
+      // This prevents the error from stopping transcription
+      console.warn('⚠️ Audio send failed but continuing:', errorMessage);
     }
   }
 
@@ -210,6 +235,80 @@ class TranscriptionService {
 
   getReadyState(): number | null {
     return this.ws?.readyState ?? null;
+  }
+
+  async getSummary(transcriptId: number, accessToken?: string): Promise<any> {
+    try {
+      // Validate transcriptId
+      if (!transcriptId || isNaN(transcriptId) || transcriptId <= 0) {
+        throw new Error('Invalid transcript ID. Must be a positive number.');
+      }
+
+      // Use Next.js API route for client-side requests
+      const isClient = typeof window !== 'undefined';
+      const url = isClient
+        ? `/api/transcription/summary/${transcriptId}`
+        : `${API_BASE_URL}${API_ENDPOINTS.TRANSCRIPTION_SUMMARY}/${transcriptId}`;
+      
+      console.log('📤 Fetching summary for transcript_id:', transcriptId, 'URL:', url);
+
+      const headers: HeadersInit = {
+        Accept: 'application/json',
+      };
+
+      // Add authorization if token is provided (only for client-side)
+      if (accessToken && isClient) {
+        headers['Authorization'] = `Bearer ${accessToken}`;
+      }
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+      });
+
+      if (!response.ok) {
+        let error: any;
+        try {
+          error = await response.json();
+        } catch {
+          const text = await response.text();
+          error = { detail: `Failed to fetch summary: ${response.statusText}`, rawResponse: text };
+        }
+
+        console.error('❌ Summary API error response:', {
+          status: response.status,
+          statusText: response.statusText,
+          error,
+          url,
+        });
+
+        if (response.status === 404) {
+          throw new Error('Summary not found for this transcription');
+        }
+        if (response.status === 400) {
+          // Check if it's the "Transcript ID is required" error from our API route
+          const errorMessage = error.detail || error.message || 'Invalid request';
+          throw new Error(errorMessage);
+        }
+        if (response.status === 422) {
+          throw new Error(error.detail?.[0]?.msg || error.detail || 'Invalid transcript ID');
+        }
+        throw new Error(error.detail || error.message || `Failed to fetch summary: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      console.log('✅ Summary fetched successfully:', data);
+      
+      // Return the data as-is - it should match SessionSummary structure
+      return data;
+    } catch (error) {
+      console.error('❌ Error fetching summary:', error);
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Failed to fetch summary');
+    }
   }
 }
 

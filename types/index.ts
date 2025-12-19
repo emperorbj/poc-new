@@ -77,6 +77,13 @@ export interface Patient {
     password: string;
   }
   
+  export interface Clinic {
+    id?: number;
+    name?: string;
+    clinic_name?: string;
+    [key: string]: any; // Allow for additional clinic properties
+  }
+
   export interface DoctorInfo {
     id: number;
     name: string;
@@ -85,17 +92,17 @@ export interface Patient {
     created_at: string;
     updated_at: string;
     specialty?: string | null;
-    clinic_name?: string | null;
+    clinic_name?: string | null; // Kept for backward compatibility, will be derived from clinics
     medical_registration_number?: string | null;
-    experience?: number | null;
+    experience?: string | null; // Changed to string to match API response
     location?: string | null;
+    clinics?: Clinic[]; // New clinics array
   }
   
   export interface AuthResponse {
     access_token: string;
     refresh_token: string;
-    token_type: 'bearer';
-    doctor: DoctorInfo;
+    user: DoctorInfo; // Changed from doctor to user
   }
   
   export interface RefreshResponse {
@@ -119,6 +126,7 @@ export interface Patient {
     confidence?: number;
     speaker_tag?: number;
     message?: string;
+    transcript_id?: number; // ID from backend
   }
   
   export interface TranscriptionResult {
@@ -128,4 +136,5 @@ export interface Patient {
     confidence?: number;
     speakerTag?: number;
     timestamp: Date;
+    transcriptId?: number; // Backend transcript ID for summary API
   }

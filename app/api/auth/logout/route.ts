@@ -5,15 +5,26 @@ import { API_BASE_URL, API_ENDPOINTS } from '@/lib/constants';
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    // API expects refresh_token as query parameter
+    const { searchParams } = new URL(request.url);
+    const refreshToken = searchParams.get('refresh_token');
 
-    const response = await fetch(`${API_BASE_URL}${API_ENDPOINTS.LOGOUT}`, {
+    if (!refreshToken) {
+      return NextResponse.json(
+        { detail: 'refresh_token is required' },
+        { status: 400 }
+      );
+    }
+
+    // Build URL with query parameter
+    const url = new URL(`${API_BASE_URL}${API_ENDPOINTS.LOGOUT}`);
+    url.searchParams.append('refresh_token', refreshToken);
+
+    const response = await fetch(url.toString(), {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
         Accept: 'application/json',
       },
-      body: JSON.stringify(body),
     });
 
     const data = await response.json();

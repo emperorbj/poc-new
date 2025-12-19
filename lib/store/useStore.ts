@@ -67,7 +67,15 @@ export const useStore = create<AppState>((set, get) => ({
       });
 
       tokenStorage.setTokens(response.access_token, response.refresh_token);
-      tokenStorage.setDoctorData(response.doctor);
+      
+      // Extract clinic_name from clinics array if available
+      const clinicName = response.user.clinics?.[0]?.name || response.user.clinics?.[0]?.clinic_name || null;
+      const doctorData = {
+        ...response.user,
+        clinic_name: clinicName || response.user.clinic_name,
+      };
+      
+      tokenStorage.setDoctorData(doctorData);
       tokenStorage.setProfileComplete(false);
 
       console.log('✅ Registration successful - Profile incomplete');
@@ -75,7 +83,7 @@ export const useStore = create<AppState>((set, get) => ({
       set({
         isAuthenticated: true,
         isProfileComplete: false,
-        doctorInfo: response.doctor,
+        doctorInfo: doctorData,
         accessToken: response.access_token,
         refreshToken: response.refresh_token,
         userRegistration: userData,
@@ -87,38 +95,122 @@ export const useStore = create<AppState>((set, get) => ({
 
   login: async (email, password) => {
     try {
+      console.log('📤 Starting login request...');
       const response = await authService.login({ email, password });
+      console.log('✅ Login API response received');
 
       tokenStorage.setTokens(response.access_token, response.refresh_token);
-      tokenStorage.setDoctorData(response.doctor);
-
-      const hasClinicInfo = Boolean(
-        response.doctor.clinic_name && response.doctor.medical_registration_number
+      
+      // Check for stored tenant details first (indicates profile was completed before)
+      const storedTenantData = tokenStorage.getTenantDetails();
+      const storedProfileComplete = tokenStorage.getProfileComplete();
+      
+      // Extract clinic_name from login response
+      const clinicNameFromResponse = response.user.clinics?.[0]?.name || 
+                                     response.user.clinics?.[0]?.clinic_name || 
+                                     response.user.clinic_name || 
+                                     null;
+      
+      let doctorData = {
+        ...response.user,
+        clinic_name: clinicNameFromResponse || response.user.clinic_name,
+      };
+      
+      // Check if profile is complete from login response
+      // Profile is complete if user has: medical_registration_number, location, specialty, and experience
+      // OR if they have clinic_name and medical_registration_number (legacy check)
+      let hasClinicInfo = Boolean(
+        doctorData.medical_registration_number &&
+        doctorData.location &&
+        doctorData.specialty &&
+        doctorData.experience
+      ) || Boolean(
+        doctorData.clinic_name && doctorData.medical_registration_number
       );
 
-      tokenStorage.setProfileComplete(hasClinicInfo);
+      // Try to fetch complete profile data from API (non-blocking)
+      // This is optional - if it fails, we use login response data
+      try {
+        console.log('📤 Fetching profile data...');
+        const profileData = await authService.getProfile(response.access_token);
+        
+        // Extract clinic_name from clinics array if available
+        const clinicName = profileData.clinics?.[0]?.name || 
+                          profileData.clinics?.[0]?.clinic_name || 
+                          profileData.clinic_name || 
+                          null;
+        
+        doctorData = {
+          ...profileData,
+          clinic_name: clinicName || profileData.clinic_name,
+        };
+        
+        // Check if profile is complete based on fetched data
+        // Profile is complete if user has: medical_registration_number, location, specialty, and experience
+        // OR if they have clinic_name and medical_registration_number (legacy check)
+        hasClinicInfo = Boolean(
+          doctorData.medical_registration_number &&
+          doctorData.location &&
+          doctorData.specialty &&
+          doctorData.experience
+        ) || Boolean(
+          doctorData.clinic_name && doctorData.medical_registration_number
+        );
+        
+        console.log('✅ Profile fetched successfully');
+      } catch (profileError) {
+        console.warn('⚠️ Could not fetch profile, using login response:', profileError);
+        // Continue with login response data - this is fine
+      }
 
-      const tenantData = hasClinicInfo ? tokenStorage.getTenantDetails() : null;
+      // Determine profile completion status:
+      // 1. If we have stored tenant details, profile was completed before
+      // 2. If stored profile complete flag is true, use it
+      // 3. Otherwise, check if current data has required profile info
+      const isProfileComplete = storedProfileComplete || 
+                               (storedTenantData !== null) || 
+                               hasClinicInfo;
+
+      tokenStorage.setDoctorData(doctorData);
+      tokenStorage.setProfileComplete(isProfileComplete);
+
+      // Use stored tenant data if available, otherwise null
+      const tenantData = storedTenantData;
 
       console.log('🔍 Login - Profile status:', {
         hasClinicInfo,
         hasTenantData: !!tenantData,
+        storedProfileComplete,
+        isProfileComplete,
+        hasClinicName: !!doctorData.clinic_name,
+        hasMedicalReg: !!doctorData.medical_registration_number,
+        hasLocation: !!doctorData.location,
+        hasSpecialty: !!doctorData.specialty,
+        hasExperience: !!doctorData.experience,
+        profileFields: {
+          medical_registration_number: doctorData.medical_registration_number,
+          location: doctorData.location,
+          specialty: doctorData.specialty,
+          experience: doctorData.experience,
+          clinic_name: doctorData.clinic_name,
+        },
       });
 
       set({
         isAuthenticated: true,
-        isProfileComplete: hasClinicInfo,
-        doctorInfo: response.doctor,
+        isProfileComplete: isProfileComplete,
+        doctorInfo: doctorData,
         accessToken: response.access_token,
         refreshToken: response.refresh_token,
         tenantDetails: tenantData || null,
       });
 
       console.log('✅ Login successful', {
-        isProfileComplete: hasClinicInfo,
+        isProfileComplete: isProfileComplete,
         hasTenantDetails: !!tenantData,
       });
     } catch (error: any) {
+      console.error('❌ Login error:', error);
       throw new Error(error.message || 'Login failed');
     }
   },
@@ -250,13 +342,20 @@ export const useStore = create<AppState>((set, get) => ({
 
       console.log('✅ Profile updated successfully:', updatedDoctor);
 
-      tokenStorage.setDoctorData(updatedDoctor);
+      // Extract clinic_name from clinics array if available
+      const clinicName = updatedDoctor.clinics?.[0]?.name || updatedDoctor.clinics?.[0]?.clinic_name || null;
+      const doctorData = {
+        ...updatedDoctor,
+        clinic_name: clinicName || updatedDoctor.clinic_name,
+      };
+
+      tokenStorage.setDoctorData(doctorData);
       tokenStorage.setTenantDetails(details);
       tokenStorage.setProfileComplete(true);
 
       set({
         tenantDetails: details,
-        doctorInfo: updatedDoctor,
+        doctorInfo: doctorData,
         isProfileComplete: true,
       });
 
@@ -277,9 +376,16 @@ export const useStore = create<AppState>((set, get) => ({
 
       const updatedDoctor = await authService.updateProfile(accessToken, data);
 
-      tokenStorage.setDoctorData(updatedDoctor);
+      // Extract clinic_name from clinics array if available
+      const clinicName = updatedDoctor.clinics?.[0]?.name || updatedDoctor.clinics?.[0]?.clinic_name || null;
+      const doctorData = {
+        ...updatedDoctor,
+        clinic_name: clinicName || updatedDoctor.clinic_name,
+      };
 
-      set({ doctorInfo: updatedDoctor });
+      tokenStorage.setDoctorData(doctorData);
+
+      set({ doctorInfo: doctorData });
 
       console.log('✅ Doctor profile updated');
     } catch (error) {
@@ -302,11 +408,29 @@ export const useStore = create<AppState>((set, get) => ({
     })),
 
   updateConsultation: (id, updates) =>
-    set((state) => ({
-      consultations: state.consultations.map((c) =>
+    set((state) => {
+      const updatedConsultations = state.consultations.map((c) =>
         c.id === id ? { ...c, ...updates } : c
-      ),
-    })),
+      );
+      
+      // Also update currentConsultation if it's the one being updated
+      const updatedCurrentConsultation = 
+        state.currentConsultation?.id === id
+          ? { ...state.currentConsultation, ...updates }
+          : state.currentConsultation;
+      
+      console.log('📝 Updating consultation:', {
+        id,
+        updates,
+        hasCurrentConsultation: !!updatedCurrentConsultation,
+        transcription: updates.transcription?.substring(0, 100),
+      });
+      
+      return {
+        consultations: updatedConsultations,
+        currentConsultation: updatedCurrentConsultation,
+      };
+    }),
 
   setCurrentConsultation: (consultation) =>
     set({ currentConsultation: consultation }),

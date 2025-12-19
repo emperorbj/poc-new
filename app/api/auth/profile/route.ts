@@ -22,17 +22,37 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    const data = await response.json();
+    // Try to parse JSON, but handle non-JSON responses
+    let data;
+    try {
+      data = await response.json();
+    } catch (parseError) {
+      const text = await response.text();
+      console.error('Get profile proxy error - non-JSON response:', {
+        status: response.status,
+        statusText: response.statusText,
+        body: text,
+      });
+      return NextResponse.json(
+        { detail: `Server error: ${response.statusText}`, raw: text },
+        { status: response.status || 500 }
+      );
+    }
 
     if (!response.ok) {
+      console.error('Get profile proxy error:', {
+        status: response.status,
+        data,
+      });
       return NextResponse.json(data, { status: response.status });
     }
 
     return NextResponse.json(data, { status: response.status });
   } catch (error) {
     console.error('Get profile proxy error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json(
-      { detail: 'Internal server error' },
+      { detail: 'Internal server error', message: errorMessage },
       { status: 500 }
     );
   }
