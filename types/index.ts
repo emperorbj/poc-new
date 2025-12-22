@@ -120,13 +120,14 @@ export interface Patient {
   
   // Transcription Types
   export interface TranscriptionMessage {
-    type: 'transcription' | 'error';
+    type: 'transcription' | 'error' | 'interim' | 'summary';
     transcript?: string;
     is_final?: boolean;
     confidence?: number;
     speaker_tag?: number;
     message?: string;
     transcript_id?: number; // ID from backend
+    summary?: any; // Summary data when type is 'summary'
   }
   
   export interface TranscriptionResult {

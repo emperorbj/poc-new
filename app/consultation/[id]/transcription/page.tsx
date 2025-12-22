@@ -11,7 +11,26 @@ import { Card } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Mic, Square, Loader2, AlertCircle, Info, Trash2, Clock, FileText, RefreshCw } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import { 
+  Mic, 
+  Square, 
+  Loader2, 
+  AlertCircle, 
+  Info, 
+  Trash2, 
+  Clock, 
+  FileText,
+  Radio,
+  Lightbulb,
+  Circle
+} from 'lucide-react';
 
 export default function TranscriptionPage() {
   const router = useRouter();
@@ -20,7 +39,10 @@ export default function TranscriptionPage() {
   const [notes, setNotes] = useState('');
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showTranscriptDialog, setShowTranscriptDialog] = useState(false);
+  const [aggregatedTranscript, setAggregatedTranscript] = useState('');
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const currentConsultation = useStore((state) => state.currentConsultation);
   const updateConsultation = useStore((state) => state.updateConsultation);
@@ -38,24 +60,19 @@ export default function TranscriptionPage() {
     startRecording,
     stopRecording,
     clearTranscriptions,
-    fetchSummary,
   } = useTranscription();
-  
-  const accessToken = useStore((state) => state.accessToken);
 
-  // Automatically fetch summary when transcript_id is available
+  // Log state changes for debugging
   useEffect(() => {
-    if (currentTranscriptId && !summary && !isLoadingSummary && !isRecording && accessToken) {
-      // Small delay to ensure backend has processed the transcription
-      const timer = setTimeout(() => {
-        console.log('🔄 Auto-fetching summary for transcript_id:', currentTranscriptId);
-        fetchSummary(undefined, accessToken);
-      }, 2000); // 2 second delay to allow backend processing
-
-      return () => clearTimeout(timer);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTranscriptId]); // Only depend on currentTranscriptId to avoid infinite loops
+    console.log('🎨 UI State Update:', {
+      isRecording,
+      isConnected,
+      currentInterim: currentInterim ? currentInterim.substring(0, 50) + '...' : null,
+      currentInterimLength: currentInterim?.length || 0,
+      transcriptionsCount: transcriptions.length,
+      hasError: !!error,
+    });
+  }, [isRecording, isConnected, currentInterim, transcriptions.length, error]);
 
   // Auto-scroll to bottom when new transcriptions arrive
   useEffect(() => {
@@ -66,6 +83,16 @@ export default function TranscriptionPage() {
       }
     }
   }, [transcriptions, currentInterim]);
+
+  // Auto-scroll the full transcript area during recording
+  useEffect(() => {
+    if (isRecording && transcriptScrollRef.current) {
+      const scrollContainer = transcriptScrollRef.current.querySelector('[data-radix-scroll-area-viewport]');
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      }
+    }
+  }, [transcriptions, currentInterim, isRecording]);
 
   // Track recording duration
   useEffect(() => {
@@ -105,9 +132,8 @@ export default function TranscriptionPage() {
   };
 
   const getWordCount = () => {
-    const allText = [...transcriptions.map((t) => t.text), currentInterim]
-      .filter(Boolean)
-      .join(' ');
+    // Only count words from final transcriptions
+    const allText = transcriptions.map((t) => t.text).join(' ');
     return allText.split(/\s+/).filter((word) => word.length > 0).length;
   };
 
@@ -120,9 +146,115 @@ export default function TranscriptionPage() {
     startRecording();
   };
 
+  // Extract meaningful sentences from interim transcript (like YouTube)
+  // includeSpeakers: if true, keeps [SPEAKER_X]: tags, if false removes them
+  const extractMeaningfulText = (interim: string, includeSpeakers: boolean = false): string => {
+    if (!interim) return '';
+    
+    const lines = interim.split('\n').filter(line => line.trim());
+    const seen = new Set<string>();
+    const uniqueLines: string[] = [];
+    
+    // Process in reverse to keep final versions
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      
+      if (includeSpeakers) {
+        // Keep speaker tags
+        if (!seen.has(line)) {
+          seen.add(line);
+          uniqueLines.unshift(line);
+        }
+      } else {
+        // Remove speaker tags
+        const cleanLine = line.replace(/^\[SPEAKER_\d+\]:\s*/, '').trim();
+        if (cleanLine && !seen.has(cleanLine)) {
+          seen.add(cleanLine);
+          uniqueLines.unshift(cleanLine);
+        }
+      }
+    }
+    
+    // Filter out incomplete lines that are prefixes of later lines
+    const finalLines: string[] = [];
+    for (let i = 0; i < uniqueLines.length; i++) {
+      const current = includeSpeakers ? uniqueLines[i] : uniqueLines[i].replace(/^\[SPEAKER_\d+\]:\s*/, '');
+      const checkAgainst = includeSpeakers ? uniqueLines : uniqueLines.map(l => l.replace(/^\[SPEAKER_\d+\]:\s*/, ''));
+      const isPrefix = checkAgainst.slice(i + 1).some(later => later.startsWith(current));
+      if (!isPrefix) {
+        finalLines.push(uniqueLines[i]);
+      }
+    }
+    
+    return includeSpeakers 
+      ? finalLines.join('\n').trim()
+      : finalLines.join(' ').trim();
+  };
+
+  // Get the latest line from interim - simple, just show the most recent
+  const getLatestInterimLine = (interim: string): { text: string; speaker: string | null } | null => {
+    if (!interim || !interim.trim()) return null;
+    
+    const lines = interim.split('\n').filter(line => line.trim());
+    if (lines.length === 0) return null;
+    
+    // Just get the latest line - simple!
+    const latestLine = lines[lines.length - 1];
+    
+    // Extract speaker and text
+    const speakerMatch = latestLine.match(/^\[SPEAKER_(\d+)\]:\s*(.+)$/);
+    if (speakerMatch) {
+      const speakerNum = speakerMatch[1];
+      const cleanText = speakerMatch[2].trim();
+      if (cleanText) {
+        return { text: cleanText, speaker: `Speaker ${speakerNum}` };
+      }
+    } else {
+      // No speaker tag
+      const cleanText = latestLine.replace(/^\[SPEAKER_\d+\]:\s*/, '').trim();
+      if (cleanText) {
+        return { text: cleanText, speaker: null };
+      }
+    }
+    
+    return null;
+  };
+
   const handleStopRecording = () => {
     stopRecording();
+    // No need to show dialog - transcript is already visible in scroll area
   };
+
+  // Get aggregated transcript for display (updates in real-time during recording)
+  // Includes speaker tags for better readability
+  const getAggregatedTranscript = (includeSpeakers: boolean = true): string => {
+    const allFinalTexts = transcriptions.map(t => {
+      if (includeSpeakers && t.speakerTag) {
+        return `[SPEAKER_${t.speakerTag}]: ${t.text}`;
+      }
+      return t.text;
+    }).join('\n\n');
+    
+    // For interim, show with speaker tags if available
+    let interimText = '';
+    if (currentInterim) {
+      if (includeSpeakers) {
+        // Keep speaker tags in interim text
+        interimText = extractMeaningfulText(currentInterim, true);
+      } else {
+        interimText = extractMeaningfulText(currentInterim, false);
+      }
+    }
+    
+    const fullTranscript = [allFinalTexts, interimText]
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+    
+    return fullTranscript;
+  };
+
 
   const handleFinish = () => {
     if (isRecording) {
@@ -131,40 +263,26 @@ export default function TranscriptionPage() {
     }
 
     // Check if there's any content to save
-    // Include both final transcriptions and interim transcription
+    // Only use final transcriptions
     const hasFinalTranscriptions = transcriptions.length > 0;
-    const hasInterimTranscription = currentInterim && currentInterim.trim().length > 0;
-    const hasTranscriptions = hasFinalTranscriptions || hasInterimTranscription;
     const hasNotes = notes.trim().length > 0;
     const hasSummary = summary && (typeof summary === 'string' ? summary.trim().length > 0 : Object.keys(summary).length > 0);
-    const hasContent = hasTranscriptions || hasNotes || hasSummary;
+    const hasContent = hasFinalTranscriptions || hasNotes || hasSummary;
 
     if (!hasContent) {
       const proceed = confirm('No transcription, notes, or summary recorded. Do you want to continue anyway?');
       if (!proceed) return;
     }
 
-    // Build the transcription text
-    // Start with final transcriptions
+    // Build the transcription text from final transcriptions only
     let fullTranscription = transcriptions.map((t) => t.text).join(' ');
     
     console.log('📝 Building transcription for save:', {
       finalTranscriptionsCount: transcriptions.length,
       finalTranscriptions: transcriptions.map(t => t.text),
-      hasInterim: !!currentInterim,
-      interimText: currentInterim?.substring(0, 100),
       hasSummary: !!summary,
       hasNotes: !!notes.trim(),
     });
-    
-    // Add interim transcription if available (and no final transcriptions, or as additional context)
-    if (currentInterim && currentInterim.trim()) {
-      if (fullTranscription) {
-        fullTranscription += `\n\n[Interim: ${currentInterim}]`;
-      } else {
-        fullTranscription = currentInterim;
-      }
-    }
     
     let transcriptionWithNotes = fullTranscription;
     
@@ -210,8 +328,8 @@ export default function TranscriptionPage() {
   };
 
   const getStatusText = () => {
-    if (error) return '⚠️ Error';
-    if (isRecording) return '🔴 Recording & Transcribing...';
+    if (error) return <><AlertCircle className="inline w-4 h-4 mr-1" /> Error</>;
+    if (isRecording) return <><Radio className="inline w-4 h-4 mr-1 animate-pulse" /> Recording & Transcribing...</>;
     if (isConnected) return '🟢 Connected';
     return '⚪ Ready';
   };
@@ -244,8 +362,9 @@ export default function TranscriptionPage() {
             <AlertDescription>
               <div className="space-y-1">
                 <p>Tap &quot;Start Live Transcription&quot; to begin recording.</p>
-                <p className="text-xs opacity-90">
-                  💡 Tips: Ensure you&apos;re in a quiet environment and speak clearly for best results.
+                <p className="flex items-center gap-1 text-xs opacity-90">
+                  <Lightbulb className="w-3 h-3" />
+                  Tips: Ensure you&apos;re in a quiet environment and speak clearly for best results.
                 </p>
               </div>
             </AlertDescription>
@@ -295,122 +414,113 @@ export default function TranscriptionPage() {
               Start Live Transcription
             </Button>
           ) : (
-            <div className="space-y-4">
-              <div className="flex items-center justify-center gap-3 p-4 bg-red-50 rounded-lg border-2 border-red-200">
-                <div className="relative">
-                  <div className="w-4 h-4 bg-red-500 rounded-full animate-pulse" />
-                  <div className="absolute inset-0 w-4 h-4 bg-red-500 rounded-full animate-ping opacity-75" />
-                </div>
-                <div className="flex-1 text-center">
-                  <div className="flex items-center justify-center gap-2">
-                    <Clock className="w-4 h-4 text-red-600" />
-                    <span className="text-lg font-bold text-red-600">
-                      {formatDuration(recordingDuration)}
-                    </span>
-                  </div>
-                  <span className="text-sm text-red-600 font-medium">Recording in progress</span>
-                </div>
+            <div className="flex items-center justify-center gap-3 p-4 bg-red-50 rounded-lg border-2 border-red-200">
+              <div className="relative">
+                <Circle className="w-4 h-4 text-red-500 fill-red-500 animate-pulse" />
+                <Circle className="absolute inset-0 w-4 h-4 text-red-500 fill-red-500 animate-ping opacity-75" />
               </div>
-              <Button
-                onClick={handleStopRecording}
-                variant="destructive"
-                className="w-full"
-              >
-                <Square className="mr-2" size={20} />
-                Stop Recording
-              </Button>
+              <div className="flex-1 text-center">
+                <div className="flex items-center justify-center gap-2">
+                  <Clock className="w-4 h-4 text-red-600" />
+                  <span className="text-lg font-bold text-red-600">
+                    {formatDuration(recordingDuration)}
+                  </span>
+                </div>
+                <span className="text-sm text-red-600 font-medium">Recording in progress</span>
+              </div>
             </div>
           )}
         </Card>
 
-        {/* Live Transcription Display */}
-        {(transcriptions.length > 0 || currentInterim || isRecording) && (
-          <Card className="p-4">
-            <div className="flex justify-between items-center mb-3">
-              <div>
-                <h2 className="text-lg font-semibold">Live Transcription</h2>
-                {(transcriptions.length > 0 || currentInterim) && (
-                  <p className="text-xs text-gray-500 mt-1">
-                    {getWordCount()} words • {transcriptions.length} final segments
-                  </p>
-                )}
-              </div>
-              {transcriptions.length > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleClear}
-                  className={showClearConfirm ? 'text-red-600' : 'text-primary'}
-                >
-                  <Trash2 className="mr-1" size={16} />
-                  {showClearConfirm ? 'Confirm Clear' : 'Clear'}
-                </Button>
-              )}
-            </div>
-
-            <ScrollArea ref={scrollAreaRef} className="h-64 border rounded-lg p-3 bg-gray-50">
-              {/* Final Transcriptions */}
-              {transcriptions.map((t) => (
-                <div key={t.id} className="mb-3 p-3 bg-green-50 rounded-lg border-l-4 border-secondary">
-                  {t.speakerTag && (
-                    <p className="text-xs font-semibold text-primary mb-1">
-                      Speaker {t.speakerTag}:
-                    </p>
-                  )}
-                  <p className="text-sm text-gray-800">{t.text}</p>
-                  {t.confidence && (
-                    <p className="text-xs text-gray-500 mt-1">
-                      {(t.confidence * 100).toFixed(0)}% confidence
-                    </p>
-                  )}
-                </div>
-              ))}
-
-              {/* Interim Transcription */}
-              {currentInterim && (
-                <div className="mb-3 p-3 bg-gray-100 rounded-lg border-l-4 border-gray-400">
-                  <p className="text-sm text-gray-600 italic">{currentInterim}</p>
-                </div>
-              )}
-
-              {/* Listening Indicator */}
-              {isRecording && !currentInterim && transcriptions.length === 0 && (
-                <div className="flex items-center justify-center gap-2 py-8">
-                  <Loader2 className="animate-spin text-primary" size={20} />
-                  <span className="text-sm text-gray-600 italic">Listening...</span>
-                </div>
-              )}
-            </ScrollArea>
-          </Card>
+        {/* Floating Stop Button - Bottom Right Corner */}
+        {isRecording && (
+          <div className="fixed bottom-6 right-6 z-50">
+            <Button
+              onClick={handleStopRecording}
+              variant="destructive"
+              size="lg"
+              className="rounded-full shadow-2xl h-16 w-16 p-0 hover:scale-110 transition-transform"
+            >
+              <Square className="h-6 w-6" />
+            </Button>
+          </div>
         )}
 
-        {/* Summary Section */}
-        {currentTranscriptId && (
+        {/* Live Transcription - Simple blue container showing latest interim message */}
+        {isRecording && (() => {
+          if (!currentInterim || !currentInterim.trim()) return null;
+          
+          const result = getLatestInterimLine(currentInterim);
+          if (!result || !result.text) return null;
+          
+          return (
+            <Card className="p-6 bg-blue-50 border-2 border-blue-300 shadow-md mb-4">
+              {result.speaker && (
+                <div className="mb-3">
+                  <Badge variant="outline" className="bg-blue-200 text-blue-800 border-blue-400 font-semibold">
+                    {result.speaker}
+                  </Badge>
+                </div>
+              )}
+              <div className="bg-white rounded-lg p-4">
+                <p className="text-lg text-gray-900 leading-relaxed font-medium">
+                  {result.text}
+                </p>
+              </div>
+            </Card>
+          );
+        })()}
+
+        {/* Full Transcription Scroll Area - Shows aggregated transcript during recording */}
+        {isRecording && (() => {
+          const fullTranscript = getAggregatedTranscript(true); // Include speaker tags
+          if (!fullTranscript.trim()) return null;
+          
+          return (
+            <Card className="p-4">
+              <div className="flex justify-between items-center mb-3">
+                <h2 className="text-lg font-semibold flex items-center gap-2">
+                  <FileText className="w-5 h-5" />
+                  Full Transcription
+                </h2>
+                <Badge variant="outline" className="bg-blue-100 text-blue-700">
+                  Live
+                </Badge>
+              </div>
+              <ScrollArea ref={transcriptScrollRef} className="h-[500px] border rounded-lg p-4 bg-gray-50">
+                <div className="prose prose-sm max-w-none">
+                  <pre className="text-gray-800 leading-relaxed whitespace-pre-wrap font-sans text-sm">
+                    {fullTranscript}
+                  </pre>
+                </div>
+              </ScrollArea>
+            </Card>
+          );
+        })()}
+
+        {/* Summary Section - Shows when summary is received via WebSocket (like demo.html) */}
+        {(summary || isLoadingSummary) && (
           <Card className="p-4">
             <div className="flex justify-between items-center mb-3">
               <h2 className="text-lg font-semibold flex items-center gap-2">
                 <FileText className="w-5 h-5" />
-                Transcription Summary
+                Clinical Summary
               </h2>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => fetchSummary(undefined, accessToken || undefined)}
-                disabled={isLoadingSummary || isRecording}
-                className="flex items-center gap-2"
-              >
-                {isLoadingSummary ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Loading...
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw className="w-4 h-4" />
-                    {summary ? 'Refresh' : 'Get Summary'}
-                  </>
-                )}
-              </Button>
+              {summary && !isRecording && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const fullTranscript = getAggregatedTranscript(true);
+                    setAggregatedTranscript(fullTranscript);
+                    setShowTranscriptDialog(true);
+                  }}
+                  className="flex items-center gap-2"
+                >
+                  <FileText className="w-4 h-4" />
+                  View Full Transcription
+                </Button>
+              )}
             </div>
             
             {summaryError && (
@@ -420,77 +530,36 @@ export default function TranscriptionPage() {
               </Alert>
             )}
             
-            {summary ? (
+            {isLoadingSummary && !summary ? (
+              <div className="p-4 bg-blue-50 rounded-lg border border-blue-200 text-center">
+                <div className="flex items-center justify-center gap-2 text-blue-600 font-semibold italic">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Generating final clinical summary...</span>
+                </div>
+              </div>
+            ) : summary ? (
               <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
                 {typeof summary === 'string' ? (
                   <p className="text-sm text-gray-800 whitespace-pre-wrap">{summary}</p>
                 ) : (
                   <div className="space-y-3">
-                    {summary.history && summary.history.length > 0 && (
-                      <div>
-                        <p className="text-xs font-semibold text-primary mb-1">History:</p>
-                        <ul className="list-disc list-inside text-sm text-gray-800">
-                          {summary.history.map((item: string, idx: number) => (
-                            <li key={idx}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {summary.examination && summary.examination.length > 0 && (
-                      <div>
-                        <p className="text-xs font-semibold text-primary mb-1">Examination:</p>
-                        <ul className="list-disc list-inside text-sm text-gray-800">
-                          {summary.examination.map((item: string, idx: number) => (
-                            <li key={idx}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {summary.diagnosis && summary.diagnosis.length > 0 && (
-                      <div>
-                        <p className="text-xs font-semibold text-primary mb-1">Diagnosis:</p>
-                        <ul className="list-disc list-inside text-sm text-gray-800">
-                          {summary.diagnosis.map((item: string, idx: number) => (
-                            <li key={idx}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {summary.treatment && summary.treatment.length > 0 && (
-                      <div>
-                        <p className="text-xs font-semibold text-primary mb-1">Treatment:</p>
-                        <ul className="list-disc list-inside text-sm text-gray-800">
-                          {summary.treatment.map((item: string, idx: number) => (
-                            <li key={idx}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {summary.nextSteps && summary.nextSteps.length > 0 && (
-                      <div>
-                        <p className="text-xs font-semibold text-primary mb-1">Next Steps:</p>
-                        <ul className="list-disc list-inside text-sm text-gray-800">
-                          {summary.nextSteps.map((item: string, idx: number) => (
-                            <li key={idx}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
+                    {Object.entries(summary).map(([key, value]: [string, any]) => {
+                      if (!Array.isArray(value) || value.length === 0) return null;
+                      return (
+                        <div key={key} className="mb-4 text-left">
+                          <h3 className="font-bold capitalize text-blue-800 text-sm mb-1">{key}</h3>
+                          <ul className="list-disc ml-5 space-y-1">
+                            {value.map((item: string, idx: number) => (
+                              <li key={idx} className="text-slate-700 text-sm">{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
-            ) : (
-              <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 text-center">
-                <p className="text-sm text-gray-500">
-                  {isLoadingSummary 
-                    ? 'Generating summary...' 
-                    : 'Click "Get Summary" to generate a summary of the transcription'}
-                </p>
-                {currentTranscriptId && (
-                  <p className="text-xs text-gray-400 mt-2">Transcript ID: {currentTranscriptId}</p>
-                )}
-              </div>
-            )}
+            ) : null}
           </Card>
         )}
 
@@ -506,6 +575,45 @@ export default function TranscriptionPage() {
             className="resize-none"
           />
         </Card>
+
+        {/* Aggregated Transcript Dialog */}
+        <Dialog open={showTranscriptDialog} onOpenChange={setShowTranscriptDialog}>
+          <DialogContent className="max-w-3xl max-h-[80vh]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <FileText className="w-5 h-5" />
+                Complete Transcription
+              </DialogTitle>
+              <DialogDescription>
+                Full transcript of the consultation
+              </DialogDescription>
+            </DialogHeader>
+            <ScrollArea className="max-h-[60vh] p-4">
+              <div className="prose prose-sm max-w-none">
+                <pre className="text-gray-800 leading-relaxed whitespace-pre-wrap font-sans text-sm">
+                  {aggregatedTranscript || getAggregatedTranscript(true) || 'No transcription available.'}
+                </pre>
+              </div>
+            </ScrollArea>
+            <div className="flex justify-end gap-2 pt-4">
+              <Button
+                variant="outline"
+                onClick={() => setShowTranscriptDialog(false)}
+              >
+                Close
+              </Button>
+              <Button
+                onClick={() => {
+                  const textToCopy = aggregatedTranscript || getAggregatedTranscript(true) || '';
+                  navigator.clipboard.writeText(textToCopy);
+                  // You could add a toast notification here
+                }}
+              >
+                Copy Transcript
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* Finish Button */}
         <div className="space-y-2">

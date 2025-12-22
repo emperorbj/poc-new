@@ -5,6 +5,46 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { transcriptionService } from '@/lib/api/transcription';
 import { TranscriptionResult, TranscriptionMessage } from '@/types';
 
+// Helper function to extract clean transcript from interim messages
+// Removes [SPEAKER_X]: prefixes and deduplicates incremental lines
+function extractCleanTranscript(transcript: string): string {
+  if (!transcript) return '';
+  
+  // Split by newlines and get unique lines (keeping last occurrence of each unique content)
+  const lines = transcript.split('\n').filter(line => line.trim());
+  const seen = new Set<string>();
+  const uniqueLines: string[] = [];
+  
+  // Process in reverse to keep the final version of each line
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    
+    // Remove [SPEAKER_X]: prefix
+    const cleanLine = line.replace(/^\[SPEAKER_\d+\]:\s*/, '');
+    
+    // Use a simple key to deduplicate (just the text without speaker tag)
+    if (!seen.has(cleanLine)) {
+      seen.add(cleanLine);
+      uniqueLines.unshift(cleanLine); // Add to beginning to maintain order
+    }
+  }
+  
+  // Join unique lines, but only keep the final complete sentences
+  // Filter out incomplete lines that are prefixes of later lines
+  const finalLines: string[] = [];
+  for (let i = 0; i < uniqueLines.length; i++) {
+    const current = uniqueLines[i];
+    // Check if this line is a prefix of a later line
+    const isPrefix = uniqueLines.slice(i + 1).some(later => later.startsWith(current));
+    if (!isPrefix) {
+      finalLines.push(current);
+    }
+  }
+  
+  return finalLines.join(' ').trim() || uniqueLines.join(' ').trim();
+}
+
 export function useTranscription() {
   const [isConnected, setIsConnected] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -15,36 +55,12 @@ export function useTranscription() {
   const [isLoadingSummary, setIsLoadingSummary] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [currentTranscriptId, setCurrentTranscriptId] = useState<number | null>(null);
+  const [interimTranscript, setInterimTranscript] = useState(''); // For interim messages (replaces on each update)
 
   const audioContextRef = useRef<AudioContext | null>(null);
-  const processorNodeRef = useRef<AudioWorkletNode | null>(null);
+  const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const streamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const audioBufferRef = useRef<Int16Array[]>([]);
-  const bufferFlushIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const audioChunkCountRef = useRef(0);
-  const droppedChunksRef = useRef(0);
-
-  const connectWebSocket = useCallback(() => {
-    transcriptionService.connect({
-      onConnected: () => {
-        console.log('✅ WebSocket connected');
-        setIsConnected(true);
-        setError(null);
-      },
-      onDisconnected: () => {
-        console.log('🔌 WebSocket disconnected');
-        setIsConnected(false);
-      },
-      onTranscription: (message: TranscriptionMessage) => {
-        handleTranscription(message);
-      },
-      onError: (errorMsg: string) => {
-        console.error('❌ WebSocket error:', errorMsg);
-        setError(errorMsg);
-      },
-    });
-  }, []);
 
   const handleTranscription = (message: TranscriptionMessage) => {
     // Log the complete message object from websocket
@@ -54,27 +70,67 @@ export function useTranscription() {
       is_final: message.is_final,
       confidence: message.confidence,
       speaker_tag: message.speaker_tag,
-      transcript_id: message.transcript_id, // Log transcript_id specifically
+      transcript_id: message.transcript_id,
       message: message.message,
-      fullMessage: message, // Complete message object
+      fullMessage: message,
     });
 
-    // Store transcript_id from ANY message (not just final ones)
-    // The backend might send it in interim messages too
+    // Store transcript_id from ANY message
     if (message.transcript_id) {
       setCurrentTranscriptId(message.transcript_id);
       console.log('📋 Transcript ID received:', message.transcript_id);
-    } else {
-      console.log('⚠️ No transcript_id in message - backend may not be sending it yet');
     }
 
-    if (!message.transcript) return;
+    if (!message.transcript) {
+      console.log('⚠️ Message received but no transcript field:', message);
+      return;
+    }
 
-    if (message.is_final) {
-
+    // IMPORTANT: During recording, show ALL messages as interim (even if is_final: true)
+    // This allows users to see live transcription. Only save as final when recording stops.
+    if (isRecording) {
+      // During recording: Always show as interim for live display
+      console.log('💬 Live interim transcription (during recording):', {
+        transcript: message.transcript.substring(0, 100) + '...',
+        is_final: message.is_final,
+        type: message.type,
+      });
+      setInterimTranscript(message.transcript);
+      setCurrentInterim(message.transcript);
+      console.log('✅ Updated currentInterim state for live display:', message.transcript.substring(0, 50) + '...');
+      
+      // If it's final, also save it to transcriptions but DON'T clear interim (keep showing it)
+      if (message.is_final) {
+        const cleanText = extractCleanTranscript(message.transcript);
+        const newTranscription: TranscriptionResult = {
+          id: Date.now().toString() + Math.random(),
+          text: cleanText,
+          isFinal: true,
+          confidence: message.confidence,
+          speakerTag: message.speaker_tag,
+          timestamp: new Date(),
+          transcriptId: message.transcript_id,
+        };
+        setTranscriptions((prev) => {
+          const updated = [...prev, newTranscription];
+          console.log('📝 Added to transcriptions history (but keeping interim visible). Total count:', updated.length);
+          return updated;
+        });
+        // DON'T clear interim - keep showing it during recording!
+      }
+    } 
+    // After recording stops: Handle final messages normally
+    else if (message.is_final) {
+      console.log('✅ Final transcription received (after recording):', {
+        transcript: message.transcript.substring(0, 100) + '...',
+        is_final: message.is_final,
+        type: message.type,
+      });
+      
+      const cleanText = extractCleanTranscript(message.transcript);
       const newTranscription: TranscriptionResult = {
         id: Date.now().toString() + Math.random(),
-        text: message.transcript,
+        text: cleanText,
         isFinal: true,
         confidence: message.confidence,
         speakerTag: message.speaker_tag,
@@ -84,30 +140,32 @@ export function useTranscription() {
 
       setTranscriptions((prev) => {
         const updated = [...prev, newTranscription];
-        // Log the complete accumulated transcription
-        const fullTranscription = updated.map((t) => t.text).join(' ');
-        console.log('📝 Final transcription added:', {
-          newText: message.transcript,
-          fullTranscription: fullTranscription,
-          totalTranscriptions: updated.length,
-          allTranscriptions: updated,
-        });
+        console.log('📝 Added to transcriptions history. Total count:', updated.length);
         return updated;
       });
       setCurrentInterim('');
-    } else {
-      setCurrentInterim(message.transcript);
-      console.log('💬 Interim transcription:', {
-        text: message.transcript,
-        confidence: message.confidence,
-        speaker_tag: message.speaker_tag,
+      setInterimTranscript('');
+      console.log('🧹 Cleared interim transcript after final message');
+    } 
+    // Handle interim transcriptions when not recording (shouldn't happen, but just in case)
+    else {
+      console.log('💬 Interim transcription received:', {
+        transcript: message.transcript.substring(0, 100) + '...',
+        is_final: message.is_final,
+        type: message.type,
       });
+      setInterimTranscript(message.transcript);
+      setCurrentInterim(message.transcript);
+      console.log('✅ Updated currentInterim state:', message.transcript.substring(0, 50) + '...');
     }
   };
 
   const startRecording = async () => {
     try {
       setError(null);
+      setSummary(null);
+      setSummaryError(null);
+      setIsLoadingSummary(false);
 
       // If already recording, don't start again
       if (isRecording) {
@@ -115,48 +173,65 @@ export function useTranscription() {
         return;
       }
 
-      // Connect WebSocket if not connected
-      if (!isConnected && !transcriptionService.isConnected()) {
-        console.log('🔌 Connecting WebSocket...');
-        connectWebSocket();
-
-        // Wait for connection with longer timeout
-        let attempts = 0;
-        const maxAttempts = 20; // Increased from 10 to 20 (10 seconds total)
-        while (!transcriptionService.isConnected() && attempts < maxAttempts) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          attempts++;
-          // Log progress every 2 seconds
-          if (attempts % 4 === 0) {
-            console.log(`⏳ Still connecting... (${attempts * 0.5}s)`);
+      // Create WebSocket inside startRecording (like demo.html)
+      console.log('🔌 Creating WebSocket connection...');
+      
+      // Wait for WebSocket connection before proceeding
+      await new Promise<void>((resolve, reject) => {
+        let resolved = false;
+        const timeout = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            reject(new Error('WebSocket connection timeout'));
           }
-        }
-      }
+        }, 10000); // 10 second timeout
 
-      // Check WebSocket connection status
-      if (!transcriptionService.isConnected()) {
-        // If WebSocket was closed, try to reconnect
-        console.log('🔄 WebSocket not connected, attempting to reconnect...');
-        connectWebSocket();
-        
-        // Wait for reconnection
-        let attempts = 0;
-        const maxAttempts = 10;
-        while (!transcriptionService.isConnected() && attempts < maxAttempts) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          attempts++;
-        }
-
-        if (!transcriptionService.isConnected()) {
-          const errorMsg = 'Failed to connect to transcription service. Please check your internet connection and try again.';
-          console.error('❌', errorMsg);
-          setError(errorMsg);
-          setIsConnected(false);
-          return;
-        }
-      }
-
-      console.log('✅ WebSocket is connected, proceeding with microphone access...');
+        transcriptionService.connect({
+          onConnected: () => {
+            console.log('✅ WebSocket connected');
+            setIsConnected(true);
+            setError(null);
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              resolve();
+            }
+          },
+          onDisconnected: () => {
+            console.log('🔌 WebSocket disconnected');
+            setIsConnected(false);
+          },
+          onInterim: (transcript: string) => {
+            // Handle interim messages (like demo.html - replaces text)
+            console.log('💬 onInterim callback called:', {
+              transcript: transcript.substring(0, 100) + '...',
+              length: transcript.length,
+            });
+            setInterimTranscript(transcript);
+            setCurrentInterim(transcript);
+            console.log('✅ Updated interim state via onInterim callback');
+          },
+          onSummary: (summaryData: any) => {
+            // Handle summary received via WebSocket (like demo.html)
+            console.log('✅ Summary received via WebSocket:', summaryData);
+            setSummary(summaryData);
+            setIsLoadingSummary(false);
+            setIsConnected(false); // WebSocket closes after summary
+          },
+          onTranscription: (message: TranscriptionMessage) => {
+            handleTranscription(message);
+          },
+          onError: (errorMsg: string) => {
+            console.error('❌ WebSocket error:', errorMsg);
+            setError(errorMsg);
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              reject(new Error(errorMsg));
+            }
+          },
+        });
+      });
 
       // Check if getUserMedia is available
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -173,113 +248,71 @@ export function useTranscription() {
         }
       }
 
-      // Request microphone access
+      // Request microphone access (exactly like demo.html - simple { audio: true })
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          echoCancellation: true,
-          noiseSuppression: true,
-        },
+        audio: true,
       });
 
       console.log('✅ Microphone access granted');
+      const audioTrack = stream.getAudioTracks()[0];
+      const trackSettings = audioTrack?.getSettings();
+      console.log('🎤 Audio track settings:', {
+        channelCount: trackSettings?.channelCount,
+        sampleRate: trackSettings?.sampleRate,
+        echoCancellation: trackSettings?.echoCancellation,
+        noiseSuppression: trackSettings?.noiseSuppression,
+        autoGainControl: trackSettings?.autoGainControl,
+      });
+      console.log('✅ Expected: channelCount=1 (mono), sampleRate=16000 (16kHz)');
 
       mediaStreamRef.current = stream;
-      audioContextRef.current = new AudioContext({ sampleRate: 16000 });
+      // Ensure AudioContext is exactly 16kHz for PCM16, mono
+      audioContextRef.current = new AudioContext({ 
+        sampleRate: 16000,
+        // Ensure we're working with the correct sample rate
+      });
+      
+      console.log('🎚️ AudioContext created:', {
+        sampleRate: audioContextRef.current.sampleRate,
+        state: audioContextRef.current.state,
+        expectedSampleRate: 16000,
+        sampleRateMatch: audioContextRef.current.sampleRate === 16000,
+      });
+      console.log('✅ Audio format: PCM16, mono, 16kHz');
+      
       streamSourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
 
-      // Create audio processor using AudioWorklet
-      const audioWorkletCode = `
-        class AudioProcessor extends AudioWorkletProcessor {
-          process(inputs, outputs, parameters) {
-            const input = inputs[0];
-            if (input.length > 0) {
-              const channelData = input[0];
-              const int16Data = new Int16Array(channelData.length);
-              for (let i = 0; i < channelData.length; i++) {
-                int16Data[i] = Math.max(-32768, Math.min(32767, channelData[i] * 32768));
-              }
-              this.port.postMessage(int16Data.buffer);
-            }
-            return true;
-          }
-        }
-        registerProcessor('audio-processor', AudioProcessor);
-      `;
-
-      await audioContextRef.current.audioWorklet.addModule(
-        URL.createObjectURL(
-          new Blob([audioWorkletCode], { type: 'application/javascript' })
-        )
-      );
-
-      processorNodeRef.current = new AudioWorkletNode(
-        audioContextRef.current,
-        'audio-processor'
-      );
-
-      // Buffer audio chunks and send in batches to avoid losing data
-      // Target: ~20ms chunks (320 samples at 16kHz = 20ms)
-      const TARGET_CHUNK_SIZE = 320 * 2; // 320 samples * 2 bytes per Int16 = 640 bytes
-      const FLUSH_INTERVAL_MS = 20; // Flush buffer every 20ms
+      // Use ScriptProcessor exactly like demo.html (4096 buffer size)
+      // This matches the demo.html implementation that works
+      const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
       
-      // Function to flush buffered audio
-      const flushAudioBuffer = () => {
-        if (audioBufferRef.current.length === 0 || !transcriptionService.isConnected()) {
-          return;
+      // Helper function to convert Float32 to Int16 PCM (exactly like demo.html)
+      const convertTo16Bit = (buffer: Float32Array): ArrayBuffer => {
+        let l = buffer.length;
+        let buf = new Int16Array(l);
+        while (l--) {
+          buf[l] = Math.max(-1, Math.min(1, buffer[l])) * 0x7FFF;
         }
-
-        // Combine all buffered chunks into one
-        const totalSamples = audioBufferRef.current.reduce((sum, arr) => sum + arr.length, 0);
-        if (totalSamples === 0) {
-          audioBufferRef.current = [];
-          return;
-        }
-
-        const combinedBuffer = new Int16Array(totalSamples);
-        let offset = 0;
-        
-        for (const chunk of audioBufferRef.current) {
-          combinedBuffer.set(chunk, offset);
-          offset += chunk.length;
-        }
-
-        // Send the combined buffer
-        transcriptionService.sendAudio(combinedBuffer.buffer);
-        
-        // Clear the buffer
-        audioBufferRef.current = [];
+        return buf.buffer;
       };
-      
-      processorNodeRef.current.port.onmessage = (event) => {
-        if (!transcriptionService.isConnected()) {
-          droppedChunksRef.current++;
-          return;
-        }
 
-        const audioData = new Int16Array(event.data);
-        audioBufferRef.current.push(audioData);
-        audioChunkCountRef.current++;
-
-        // Send immediately if buffer is large enough
-        const totalSamples = audioBufferRef.current.reduce((sum, arr) => sum + arr.length, 0);
-        const totalBytes = totalSamples * 2; // 2 bytes per Int16 sample
-
-        if (totalBytes >= TARGET_CHUNK_SIZE) {
-          flushAudioBuffer();
+      processor.onaudioprocess = (e: AudioProcessingEvent) => {
+        const left = e.inputBuffer.getChannelData(0);
+        const pcm16 = convertTo16Bit(left);
+        if (transcriptionService.isConnected()) {
+          transcriptionService.sendAudio(pcm16);
         }
       };
 
-      // Periodic flush to ensure no audio is lost even with small chunks
-      bufferFlushIntervalRef.current = setInterval(() => {
-        if (audioBufferRef.current.length > 0 && transcriptionService.isConnected()) {
-          flushAudioBuffer();
-        }
-      }, FLUSH_INTERVAL_MS);
+      processorNodeRef.current = processor;
+      
+      console.log('🎤 ScriptProcessor created (4096 buffer, matching demo.html)');
 
-      streamSourceRef.current.connect(processorNodeRef.current);
-      processorNodeRef.current.connect(audioContextRef.current.destination);
+      if (streamSourceRef.current && processorNodeRef.current && audioContextRef.current) {
+        streamSourceRef.current.connect(processorNodeRef.current);
+        processorNodeRef.current.connect(audioContextRef.current.destination);
+        console.log('✅ Audio pipeline connected (matching demo.html setup)');
+      }
 
       setIsRecording(true);
       console.log('✅ Recording started');
@@ -308,35 +341,7 @@ export function useTranscription() {
     try {
       console.log('⏹️ Stopping recording...');
 
-      // Clear flush interval
-      if (bufferFlushIntervalRef.current) {
-        clearInterval(bufferFlushIntervalRef.current);
-        bufferFlushIntervalRef.current = null;
-      }
-
-      // Flush any remaining audio in buffer before stopping
-      if (audioBufferRef.current.length > 0 && transcriptionService.isConnected()) {
-        const totalSamples = audioBufferRef.current.reduce((sum, arr) => sum + arr.length, 0);
-        const combinedBuffer = new Int16Array(totalSamples);
-        let offset = 0;
-        
-        for (const chunk of audioBufferRef.current) {
-          combinedBuffer.set(chunk, offset);
-          offset += chunk.length;
-        }
-        
-        transcriptionService.sendAudio(combinedBuffer.buffer);
-        audioBufferRef.current = [];
-        console.log('📤 Flushed remaining audio buffer before stopping');
-      }
-
-      // Log statistics
-      console.log('📊 Audio statistics:', {
-        chunksProcessed: audioChunkCountRef.current,
-        droppedChunks: droppedChunksRef.current,
-      });
-
-      // Disconnect audio processing nodes first
+      // Stop audio processing first
       if (processorNodeRef.current) {
         try {
           processorNodeRef.current.disconnect();
@@ -359,17 +364,15 @@ export function useTranscription() {
       if (mediaStreamRef.current) {
         mediaStreamRef.current.getTracks().forEach((track) => {
           track.stop();
-          console.log('🛑 Stopped media track:', track.kind);
         });
         mediaStreamRef.current = null;
       }
 
-      // Close AudioContext (async operation)
+      // Close AudioContext
       if (audioContextRef.current) {
         try {
           if (audioContextRef.current.state !== 'closed') {
             await audioContextRef.current.close();
-            console.log('✅ AudioContext closed');
           }
         } catch (err) {
           console.warn('⚠️ Error closing AudioContext:', err);
@@ -377,13 +380,19 @@ export function useTranscription() {
         audioContextRef.current = null;
       }
 
-      // Reset counters
-      audioChunkCountRef.current = 0;
-      droppedChunksRef.current = 0;
-      audioBufferRef.current = [];
-
       setIsRecording(false);
-      console.log('✅ Recording stopped (WebSocket remains connected for smooth restart)');
+
+      // Send end_session signal to trigger summary generation (like demo.html)
+      if (transcriptionService.isConnected()) {
+        transcriptionService.sendEndSession();
+        setIsLoadingSummary(true);
+        setSummaryError(null);
+        console.log('📤 Sent end_session signal, waiting for summary...');
+      } else {
+        console.warn('⚠️ WebSocket not connected, cannot send end_session signal');
+      }
+
+      console.log('✅ Recording stopped');
     } catch (err) {
       console.error('❌ Error stopping recording:', err);
       setIsRecording(false);
@@ -393,37 +402,11 @@ export function useTranscription() {
   const clearTranscriptions = () => {
     setTranscriptions([]);
     setCurrentInterim('');
+    setInterimTranscript('');
     setSummary(null);
     setCurrentTranscriptId(null);
     setSummaryError(null);
-  };
-
-  const fetchSummary = async (transcriptId?: number, accessToken?: string) => {
-    const idToUse = transcriptId || currentTranscriptId;
-    
-    if (!idToUse) {
-      setSummaryError('No transcript ID available. Please ensure transcription is complete.');
-      return;
-    }
-
-    try {
-      setIsLoadingSummary(true);
-      setSummaryError(null);
-      console.log('📤 Fetching summary for transcript_id:', idToUse);
-      
-      const summaryData = await transcriptionService.getSummary(idToUse, accessToken);
-      
-      // Store the summary data (can be string or structured object)
-      setSummary(summaryData);
-      console.log('✅ Summary received:', summaryData);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to fetch summary';
-      console.error('❌ Error fetching summary:', err);
-      setSummaryError(errorMessage);
-      setSummary(null);
-    } finally {
-      setIsLoadingSummary(false);
-    }
+    setIsLoadingSummary(false);
   };
 
   // Cleanup on unmount
@@ -438,7 +421,7 @@ export function useTranscription() {
     isConnected,
     isRecording,
     transcriptions,
-    currentInterim,
+    currentInterim: interimTranscript || currentInterim, // Use interimTranscript if available (from WebSocket)
     error,
     summary,
     isLoadingSummary,
@@ -447,6 +430,5 @@ export function useTranscription() {
     startRecording,
     stopRecording,
     clearTranscriptions,
-    fetchSummary,
   };
 }
