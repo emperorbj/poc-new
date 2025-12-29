@@ -52,11 +52,17 @@ export default function TranscriptionPage() {
     isRecording,
     transcriptions,
     currentInterim,
+    liveTranscript, // Streaming transcript (matching Transcribe.tsx pattern)
+    diarizedUtterances, // Final diarized transcript (matching Transcribe.tsx pattern)
     error,
     summary,
     isLoadingSummary,
     summaryError,
     currentTranscriptId,
+    // Diarization processing state
+    isProcessingDiarization,
+    processingPhase,
+    diarizationError,
     startRecording,
     stopRecording,
     clearTranscriptions,
@@ -82,7 +88,7 @@ export default function TranscriptionPage() {
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
       }
     }
-  }, [transcriptions, currentInterim]);
+  }, [transcriptions, currentInterim, diarizedUtterances]);
 
   // Auto-scroll the full transcript area during recording
   useEffect(() => {
@@ -92,7 +98,7 @@ export default function TranscriptionPage() {
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
       }
     }
-  }, [transcriptions, currentInterim, isRecording]);
+  }, [transcriptions, currentInterim, diarizedUtterances, isRecording]);
 
   // Track recording duration
   useEffect(() => {
@@ -147,7 +153,8 @@ export default function TranscriptionPage() {
   };
 
   // Extract meaningful sentences from interim transcript (like YouTube)
-  // includeSpeakers: if true, keeps [SPEAKER_X]: tags, if false removes them
+  // includeSpeakers: if true, keeps [SPEAKER1] or [SPEAKER_1]: tags, if false removes them
+  // Handles both [SPEAKER1] and [SPEAKER_1]: formats
   const extractMeaningfulText = (interim: string, includeSpeakers: boolean = false): string => {
     if (!interim) return '';
     
@@ -161,14 +168,14 @@ export default function TranscriptionPage() {
       if (!line) continue;
       
       if (includeSpeakers) {
-        // Keep speaker tags
+        // Keep speaker tags (both [SPEAKER1] and [SPEAKER_1]: formats)
         if (!seen.has(line)) {
           seen.add(line);
           uniqueLines.unshift(line);
         }
       } else {
-        // Remove speaker tags
-        const cleanLine = line.replace(/^\[SPEAKER_\d+\]:\s*/, '').trim();
+        // Remove speaker tags (handles both formats: [SPEAKER1] and [SPEAKER_1]:)
+        const cleanLine = line.replace(/^\[SPEAKER_?\d+\]:?\s*/, '').trim();
         if (cleanLine && !seen.has(cleanLine)) {
           seen.add(cleanLine);
           uniqueLines.unshift(cleanLine);
@@ -179,8 +186,9 @@ export default function TranscriptionPage() {
     // Filter out incomplete lines that are prefixes of later lines
     const finalLines: string[] = [];
     for (let i = 0; i < uniqueLines.length; i++) {
-      const current = includeSpeakers ? uniqueLines[i] : uniqueLines[i].replace(/^\[SPEAKER_\d+\]:\s*/, '');
-      const checkAgainst = includeSpeakers ? uniqueLines : uniqueLines.map(l => l.replace(/^\[SPEAKER_\d+\]:\s*/, ''));
+      // Handle both [SPEAKER1] and [SPEAKER_1]: formats
+      const current = includeSpeakers ? uniqueLines[i] : uniqueLines[i].replace(/^\[SPEAKER_?\d+\]:?\s*/, '');
+      const checkAgainst = includeSpeakers ? uniqueLines : uniqueLines.map(l => l.replace(/^\[SPEAKER_?\d+\]:?\s*/, ''));
       const isPrefix = checkAgainst.slice(i + 1).some(later => later.startsWith(current));
       if (!isPrefix) {
         finalLines.push(uniqueLines[i]);
@@ -192,7 +200,18 @@ export default function TranscriptionPage() {
       : finalLines.join(' ').trim();
   };
 
+  // Helper function to get speaker label (Doctor/Patient)
+  const getSpeakerLabel = (speaker: string | number | undefined): string => {
+    if (!speaker) return 'Speaker';
+    const speakerStr = String(speaker).toUpperCase();
+    if (speakerStr === 'A' || speakerStr === '1') return 'Doctor';
+    if (speakerStr === 'B' || speakerStr === '2') return 'Patient';
+    return `Speaker ${speaker}`;
+  };
+
   // Get the latest line from interim - simple, just show the most recent
+  // Handles both [SPEAKER1] and [SPEAKER_1]: formats
+  // Always tries to extract and show speaker information
   const getLatestInterimLine = (interim: string): { text: string; speaker: string | null } | null => {
     if (!interim || !interim.trim()) return null;
     
@@ -202,20 +221,73 @@ export default function TranscriptionPage() {
     // Just get the latest line - simple!
     const latestLine = lines[lines.length - 1];
     
-    // Extract speaker and text
-    const speakerMatch = latestLine.match(/^\[SPEAKER_(\d+)\]:\s*(.+)$/);
+    // Try multiple patterns to match speaker tags
+    // Pattern 1: [SPEAKER_1]: text (with underscore and colon)
+    let speakerMatch = latestLine.match(/^\[SPEAKER_(\d+)\]:\s*(.+)$/);
     if (speakerMatch) {
       const speakerNum = speakerMatch[1];
       const cleanText = speakerMatch[2].trim();
       if (cleanText) {
         return { text: cleanText, speaker: `Speaker ${speakerNum}` };
       }
-    } else {
-      // No speaker tag
-      const cleanText = latestLine.replace(/^\[SPEAKER_\d+\]:\s*/, '').trim();
+    }
+    
+    // Pattern 2: [SPEAKER1]: text (no underscore, with colon)
+    speakerMatch = latestLine.match(/^\[SPEAKER(\d+)\]:\s*(.+)$/);
+    if (speakerMatch) {
+      const speakerNum = speakerMatch[1];
+      const cleanText = speakerMatch[2].trim();
       if (cleanText) {
-        return { text: cleanText, speaker: null };
+        return { text: cleanText, speaker: `Speaker ${speakerNum}` };
       }
+    }
+    
+    // Pattern 3: [SPEAKER_1] text (with underscore, no colon)
+    speakerMatch = latestLine.match(/^\[SPEAKER_(\d+)\]\s+(.+)$/);
+    if (speakerMatch) {
+      const speakerNum = speakerMatch[1];
+      const cleanText = speakerMatch[2].trim();
+      if (cleanText) {
+        return { text: cleanText, speaker: `Speaker ${speakerNum}` };
+      }
+    }
+    
+    // Pattern 4: [SPEAKER1] text (no underscore, no colon)
+    speakerMatch = latestLine.match(/^\[SPEAKER(\d+)\]\s+(.+)$/);
+    if (speakerMatch) {
+      const speakerNum = speakerMatch[1];
+      const cleanText = speakerMatch[2].trim();
+      if (cleanText) {
+        return { text: cleanText, speaker: `Speaker ${speakerNum}` };
+      }
+    }
+    
+    // If latest line doesn't have speaker tag, look backwards through lines to find the most recent speaker
+    let foundSpeaker: string | null = null;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      // Try all patterns
+      let match = line.match(/^\[SPEAKER_(\d+)\]:\s*(.+)$/);
+      if (!match) match = line.match(/^\[SPEAKER(\d+)\]:\s*(.+)$/);
+      if (!match) match = line.match(/^\[SPEAKER_(\d+)\]\s+(.+)$/);
+      if (!match) match = line.match(/^\[SPEAKER(\d+)\]\s+(.+)$/);
+      
+      if (match) {
+        foundSpeaker = `Speaker ${match[1]}`;
+        break; // Use the most recent speaker found
+      }
+    }
+    
+    // Extract text from latest line (remove any speaker tag if present)
+    const cleanText = latestLine
+      .replace(/^\[SPEAKER_\d+\]:\s*/, '')
+      .replace(/^\[SPEAKER\d+\]:\s*/, '')
+      .replace(/^\[SPEAKER_\d+\]\s+/, '')
+      .replace(/^\[SPEAKER\d+\]\s+/, '')
+      .trim();
+    
+    if (cleanText) {
+      return { text: cleanText, speaker: foundSpeaker || 'Speaker' };
     }
     
     return null;
@@ -263,23 +335,41 @@ export default function TranscriptionPage() {
     }
 
     // Check if there's any content to save
-    // Only use final transcriptions
+    // Use diarized utterances if available, otherwise use regular transcriptions
+    const hasDiarizedUtterances = diarizedUtterances.length > 0;
     const hasFinalTranscriptions = transcriptions.length > 0;
     const hasNotes = notes.trim().length > 0;
     const hasSummary = summary && (typeof summary === 'string' ? summary.trim().length > 0 : Object.keys(summary).length > 0);
-    const hasContent = hasFinalTranscriptions || hasNotes || hasSummary;
+    const hasContent = hasDiarizedUtterances || hasFinalTranscriptions || hasNotes || hasSummary;
 
     if (!hasContent) {
       const proceed = confirm('No transcription, notes, or summary recorded. Do you want to continue anyway?');
       if (!proceed) return;
     }
 
-    // Build the transcription text from final transcriptions only
-    let fullTranscription = transcriptions.map((t) => t.text).join(' ');
+    // Build the transcription text - prefer diarized format if available
+    let fullTranscription = '';
+    if (hasDiarizedUtterances) {
+      // Format diarized utterances with speaker labels
+      fullTranscription = diarizedUtterances.map((utterance) => {
+        const speakerLabel = getSpeakerLabel(utterance.speaker);
+        return `[${speakerLabel}]: ${utterance.text}`;
+      }).join('\n\n');
+    } else {
+      // Fallback to regular transcriptions
+      fullTranscription = transcriptions.map((t) => {
+        if (t.speaker) {
+          const speakerLabel = getSpeakerLabel(t.speaker);
+          return `[${speakerLabel}]: ${t.text}`;
+        }
+        return t.text;
+      }).join('\n\n');
+    }
     
     console.log('📝 Building transcription for save:', {
+      hasDiarizedUtterances,
+      diarizedCount: diarizedUtterances.length,
       finalTranscriptionsCount: transcriptions.length,
-      finalTranscriptions: transcriptions.map(t => t.text),
       hasSummary: !!summary,
       hasNotes: !!notes.trim(),
     });
@@ -446,57 +536,125 @@ export default function TranscriptionPage() {
           </div>
         )}
 
-        {/* Live Transcription - Simple blue container showing latest interim message */}
-        {isRecording && (() => {
-          if (!currentInterim || !currentInterim.trim()) return null;
-          
-          const result = getLatestInterimLine(currentInterim);
-          if (!result || !result.text) return null;
-          
-          return (
-            <Card className="p-6 bg-blue-50 border-2 border-blue-300 shadow-md mb-4">
-              {result.speaker && (
-                <div className="mb-3">
-                  <Badge variant="outline" className="bg-blue-200 text-blue-800 border-blue-400 font-semibold">
-                    {result.speaker}
-                  </Badge>
-                </div>
-              )}
-              <div className="bg-white rounded-lg p-4">
-                <p className="text-lg text-gray-900 leading-relaxed font-medium">
-                  {result.text}
+        {/* Live Transcription - Show streaming transcript (matching Transcribe.tsx pattern) */}
+        {isRecording && liveTranscript && (
+          <Card className="p-6 bg-blue-50 border-2 border-blue-300 shadow-md mb-4">
+            <div className="flex items-center justify-between mb-3">
+              <Badge variant="outline" className="bg-blue-200 text-blue-800 border-blue-400 font-semibold">
+                Live Transcript
+              </Badge>
+              <Badge variant="outline" className="bg-red-100 text-red-700 animate-pulse">
+                Recording
+              </Badge>
+            </div>
+            <div className="bg-white rounded-lg p-4">
+              <pre className="text-sm text-gray-900 leading-relaxed whitespace-pre-wrap font-sans">
+                {liveTranscript}
+              </pre>
+            </div>
+          </Card>
+        )}
+
+        {/* Processing Diarization Loading State - Shows while waiting for LLM to process */}
+        {isProcessingDiarization && processingPhase === 'waiting_diarized' && (
+          <Card className="p-4">
+            <div className="flex items-center justify-center gap-3 p-6 bg-blue-50 rounded-lg border-2 border-blue-200">
+              <Loader2 className="w-6 h-6 text-blue-600 animate-spin" />
+              <div className="text-center">
+                <p className="text-lg font-semibold text-blue-800">
+                  Processing Conversation with AI...
+                </p>
+                <p className="text-sm text-blue-600 mt-1">
+                  Separating speakers and organizing the transcript
                 </p>
               </div>
-            </Card>
-          );
-        })()}
+            </div>
+            {diarizationError && (
+              <Alert variant="destructive" className="mt-3">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{diarizationError}</AlertDescription>
+              </Alert>
+            )}
+          </Card>
+        )}
 
-        {/* Full Transcription Scroll Area - Shows aggregated transcript during recording */}
-        {isRecording && (() => {
-          const fullTranscript = getAggregatedTranscript(true); // Include speaker tags
-          if (!fullTranscript.trim()) return null;
-          
-          return (
-            <Card className="p-4">
-              <div className="flex justify-between items-center mb-3">
-                <h2 className="text-lg font-semibold flex items-center gap-2">
-                  <FileText className="w-5 h-5" />
-                  Full Transcription
-                </h2>
+        {/* Final Diarized Transcript Display - Shows structured conversation with Doctor/Patient labels (matching Transcribe.tsx pattern) */}
+        {diarizedUtterances.length > 0 && (
+          <Card className="p-4">
+            <div className="flex justify-between items-center mb-3">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <FileText className="w-5 h-5" />
+                Conversation Transcript
+              </h2>
+              {processingPhase === 'waiting_summary' && (
+                <Badge variant="outline" className="bg-yellow-100 text-yellow-700">
+                  Processing Summary...
+                </Badge>
+              )}
+              {isRecording && (
                 <Badge variant="outline" className="bg-blue-100 text-blue-700">
                   Live
                 </Badge>
+              )}
+            </div>
+            <ScrollArea ref={transcriptScrollRef} className="h-[500px] border rounded-lg p-4 bg-gray-50">
+              <div className="space-y-4">
+                {diarizedUtterances.map((utterance, index) => {
+                  // Handle both string (A/B) and number (0/1) speaker formats
+                  const speakerId = typeof utterance.speaker === 'string' 
+                    ? utterance.speaker 
+                    : typeof utterance.speaker === 'number'
+                    ? (utterance.speaker === 0 ? 'A' : utterance.speaker === 1 ? 'B' : String(utterance.speaker))
+                    : String(utterance.speaker);
+                  const speakerLabel = getSpeakerLabel(speakerId);
+                  const isDoctor = speakerId === 'A' || speakerId === '1' || (typeof utterance.speaker === 'number' && utterance.speaker === 0);
+                  const borderColor = isDoctor ? 'border-l-blue-500' : 'border-l-rose-500';
+                  const badgeColor = isDoctor 
+                    ? 'bg-blue-500 text-white' 
+                    : 'bg-rose-500 text-white';
+                  
+                  return (
+                    <div
+                      key={index}
+                      className={`bg-white border-l-4 ${borderColor} rounded-r-xl p-4 shadow-sm animate-in slide-in-from-right-2`}
+                    >
+                      <div className="mb-2">
+                        <Badge className={badgeColor}>
+                          {speakerLabel}
+                        </Badge>
+                      </div>
+                      <p className="text-gray-800 leading-relaxed text-sm md:text-base">
+                        {utterance.text}
+                      </p>
+                    </div>
+                  );
+                })}
               </div>
-              <ScrollArea ref={transcriptScrollRef} className="h-[500px] border rounded-lg p-4 bg-gray-50">
-                <div className="prose prose-sm max-w-none">
-                  <pre className="text-gray-800 leading-relaxed whitespace-pre-wrap font-sans text-sm">
-                    {fullTranscript}
-                  </pre>
-                </div>
-              </ScrollArea>
-            </Card>
-          );
-        })()}
+            </ScrollArea>
+          </Card>
+        )}
+
+        {/* Full Transcription Scroll Area - Shows live transcript during recording if no diarized utterances yet */}
+        {isRecording && diarizedUtterances.length === 0 && liveTranscript && (
+          <Card className="p-4">
+            <div className="flex justify-between items-center mb-3">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <FileText className="w-5 h-5" />
+                Full Transcription
+              </h2>
+              <Badge variant="outline" className="bg-blue-100 text-blue-700">
+                Live
+              </Badge>
+            </div>
+            <ScrollArea ref={transcriptScrollRef} className="h-[500px] border rounded-lg p-4 bg-gray-50">
+              <div className="prose prose-sm max-w-none">
+                <pre className="text-gray-800 leading-relaxed whitespace-pre-wrap font-sans text-sm">
+                  {liveTranscript}
+                </pre>
+              </div>
+            </ScrollArea>
+          </Card>
+        )}
 
         {/* Summary Section - Shows when summary is received via WebSocket (like demo.html) */}
         {(summary || isLoadingSummary) && (

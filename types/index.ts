@@ -120,7 +120,7 @@ export interface Patient {
   
   // Transcription Types
   export interface TranscriptionMessage {
-    type: 'transcription' | 'error' | 'interim' | 'summary';
+    type: 'transcription' | 'error' | 'interim' | 'summary' | 'diarized_transcript';
     transcript?: string;
     is_final?: boolean;
     confidence?: number;
@@ -128,6 +128,20 @@ export interface Patient {
     message?: string;
     transcript_id?: number; // ID from backend
     summary?: any; // Summary data when type is 'summary'
+    utterances?: DiarizedUtterance[]; // For diarized_transcript messages
+  }
+  
+  export interface DiarizedUtterance {
+    speaker: 'A' | 'B' | string; // 'A' = Doctor, 'B' = Patient
+    text: string;
+    start_time?: number;
+    end_time?: number;
+    confidence?: number;
+  }
+  
+  export interface DiarizedTranscript {
+    utterances: DiarizedUtterance[];
+    transcript?: string; // Fallback full transcript text
   }
   
   export interface TranscriptionResult {
@@ -138,4 +152,5 @@ export interface Patient {
     speakerTag?: number;
     timestamp: Date;
     transcriptId?: number; // Backend transcript ID for summary API
+    speaker?: 'A' | 'B' | string; // For diarized transcripts
   }

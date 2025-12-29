@@ -3,10 +3,11 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { transcriptionService } from '@/lib/api/transcription';
-import { TranscriptionResult, TranscriptionMessage } from '@/types';
+import { TranscriptionResult, TranscriptionMessage, DiarizedUtterance } from '@/types';
 
 // Helper function to extract clean transcript from interim messages
-// Removes [SPEAKER_X]: prefixes and deduplicates incremental lines
+// Removes [SPEAKER1] or [SPEAKER_X]: prefixes and deduplicates incremental lines
+// Handles both [SPEAKER1] and [SPEAKER_1]: formats
 function extractCleanTranscript(transcript: string): string {
   if (!transcript) return '';
   
@@ -20,8 +21,9 @@ function extractCleanTranscript(transcript: string): string {
     const line = lines[i].trim();
     if (!line) continue;
     
-    // Remove [SPEAKER_X]: prefix
-    const cleanLine = line.replace(/^\[SPEAKER_\d+\]:\s*/, '');
+    // Remove [SPEAKER1] or [SPEAKER_X]: prefix (handles both formats)
+    // Pattern: [SPEAKER1] or [SPEAKER_1]: followed by optional colon and space
+    const cleanLine = line.replace(/^\[SPEAKER_?\d+\]:?\s*/, '');
     
     // Use a simple key to deduplicate (just the text without speaker tag)
     if (!seen.has(cleanLine)) {
@@ -55,12 +57,31 @@ export function useTranscription() {
   const [isLoadingSummary, setIsLoadingSummary] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [currentTranscriptId, setCurrentTranscriptId] = useState<number | null>(null);
-  const [interimTranscript, setInterimTranscript] = useState(''); // For interim messages (replaces on each update)
+  
+  // Simplified state matching Transcribe.tsx pattern
+  const [liveTranscript, setLiveTranscript] = useState(''); // Streaming transcript (plain text, accumulated by BE)
+  const [diarizedUtterances, setDiarizedUtterances] = useState<DiarizedUtterance[]>([]); // Final diarized transcript (structured)
+
+  // Diarization processing state
+  const [isProcessingDiarization, setIsProcessingDiarization] = useState(false);
+  const [processingPhase, setProcessingPhase] = useState<'idle' | 'waiting_diarized' | 'waiting_summary'>('idle');
+  const [diarizationError, setDiarizationError] = useState<string | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const streamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const diarizationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const processingPhaseRef = useRef<'idle' | 'waiting_diarized' | 'waiting_summary'>('idle');
+
+  // Helper function to map speaker tag to label
+  const getSpeakerLabel = (speaker: string | number | undefined): string => {
+    if (!speaker) return 'Speaker';
+    const speakerStr = String(speaker).toUpperCase();
+    if (speakerStr === 'A' || speakerStr === '1') return 'Doctor';
+    if (speakerStr === 'B' || speakerStr === '2') return 'Patient';
+    return `Speaker ${speaker}`;
+  };
 
   const handleTranscription = (message: TranscriptionMessage) => {
     // Log the complete message object from websocket
@@ -72,6 +93,8 @@ export function useTranscription() {
       speaker_tag: message.speaker_tag,
       transcript_id: message.transcript_id,
       message: message.message,
+      hasUtterances: !!message.utterances,
+      utterancesCount: message.utterances?.length || 0,
       fullMessage: message,
     });
 
@@ -81,82 +104,115 @@ export function useTranscription() {
       console.log('📋 Transcript ID received:', message.transcript_id);
     }
 
-    if (!message.transcript) {
-      console.log('⚠️ Message received but no transcript field:', message);
+    // Handle status messages
+    if (message.type === 'status') {
+      console.log('📊 Status message:', message.message);
       return;
     }
 
-    // IMPORTANT: During recording, show ALL messages as interim (even if is_final: true)
-    // This allows users to see live transcription. Only save as final when recording stops.
-    if (isRecording) {
-      // During recording: Always show as interim for live display
-      console.log('💬 Live interim transcription (during recording):', {
-        transcript: message.transcript.substring(0, 100) + '...',
-        is_final: message.is_final,
-        type: message.type,
+    /**
+     * STREAMING - Matching Transcribe.tsx pattern
+     * Backend sends the FULL transcript every time.
+     * We render ONLY finalized content (when is_final is true).
+     */
+    if (message.type === 'interim' && message.is_final) {
+      console.log('💬 Streaming transcript (interim + is_final):', {
+        transcript: message.transcript?.substring(0, 100) + '...',
+        length: message.transcript?.length || 0,
       });
-      setInterimTranscript(message.transcript);
-      setCurrentInterim(message.transcript);
-      console.log('✅ Updated currentInterim state for live display:', message.transcript.substring(0, 50) + '...');
-      
-      // If it's final, also save it to transcriptions but DON'T clear interim (keep showing it)
-      if (message.is_final) {
-        const cleanText = extractCleanTranscript(message.transcript);
-        const newTranscription: TranscriptionResult = {
-          id: Date.now().toString() + Math.random(),
-          text: cleanText,
-          isFinal: true,
-          confidence: message.confidence,
-          speakerTag: message.speaker_tag,
-          timestamp: new Date(),
-          transcriptId: message.transcript_id,
-        };
-        setTranscriptions((prev) => {
-          const updated = [...prev, newTranscription];
-          console.log('📝 Added to transcriptions history (but keeping interim visible). Total count:', updated.length);
-          return updated;
-        });
-        // DON'T clear interim - keep showing it during recording!
-      }
-    } 
-    // After recording stops: Handle final messages normally
-    else if (message.is_final) {
-      console.log('✅ Final transcription received (after recording):', {
-        transcript: message.transcript.substring(0, 100) + '...',
-        is_final: message.is_final,
-        type: message.type,
-      });
-      
-      const cleanText = extractCleanTranscript(message.transcript);
-      const newTranscription: TranscriptionResult = {
-        id: Date.now().toString() + Math.random(),
-        text: cleanText,
-        isFinal: true,
-        confidence: message.confidence,
-        speakerTag: message.speaker_tag,
-        timestamp: new Date(),
-        transcriptId: message.transcript_id,
-      };
+      setLiveTranscript(message.transcript || '');
+      setCurrentInterim(message.transcript || ''); // Also set for backward compatibility
+      return;
+    }
 
-      setTranscriptions((prev) => {
-        const updated = [...prev, newTranscription];
-        console.log('📝 Added to transcriptions history. Total count:', updated.length);
-        return updated;
+    /**
+     * FINAL DIARIZED TRANSCRIPT - Matching Transcribe.tsx pattern
+     * This REPLACES streaming transcript entirely.
+     * Received after end_session is sent and backend processes with LLM.
+     */
+    if (message.type === 'diarized_transcript') {
+      console.log('🎯 Processing diarized transcript with', message.utterances?.length || 0, 'utterances');
+      
+      // Clear timeout if it was set
+      if (diarizationTimeoutRef.current) {
+        clearTimeout(diarizationTimeoutRef.current);
+        diarizationTimeoutRef.current = null;
+      }
+      
+      // Update processing state
+      setIsProcessingDiarization(false);
+      setProcessingPhase('waiting_summary'); // Next we wait for summary
+      processingPhaseRef.current = 'waiting_summary'; // Update ref
+      setDiarizationError(null);
+      
+      if (message.utterances && message.utterances.length > 0) {
+        // Replace utterances (like Transcribe.tsx)
+        setDiarizedUtterances(message.utterances);
+        setLiveTranscript(''); // streaming phase ends here
+        
+        console.log('✅ Diarized transcript received and processed. Waiting for summary...');
+        
+        // Also convert to TranscriptionResult format for backward compatibility
+        message.utterances.forEach((utterance) => {
+          const newTranscription: TranscriptionResult = {
+            id: Date.now().toString() + Math.random(),
+            text: utterance.text,
+            isFinal: true,
+            confidence: utterance.confidence || message.confidence,
+            speakerTag: utterance.speaker === 'A' ? 1 : utterance.speaker === 'B' ? 2 : undefined,
+            speaker: utterance.speaker,
+            timestamp: new Date(),
+            transcriptId: message.transcript_id,
+          };
+          setTranscriptions((prev) => {
+            // Check if this utterance already exists (avoid duplicates)
+            const exists = prev.some(t => 
+              t.text === utterance.text && 
+              t.speaker === utterance.speaker &&
+              Math.abs(t.timestamp.getTime() - newTranscription.timestamp.getTime()) < 1000
+            );
+            if (exists) return prev;
+            return [...prev, newTranscription];
+          });
+        });
+      } else {
+        console.warn('⚠️ diarized_transcript received but no utterances in message');
+      }
+      return;
+    }
+
+    /**
+     * SUMMARY - Matching Transcribe.tsx pattern
+     * Received after diarized_transcript (or directly if diarization skipped)
+     */
+    if (message.type === 'summary') {
+      console.log('📄 Summary received via WebSocket');
+      const summaryData = typeof message.summary === 'string'
+        ? JSON.parse(message.summary)
+        : message.summary;
+      setSummary(summaryData);
+      setIsLoadingSummary(false);
+      setProcessingPhase('idle'); // Processing complete
+      processingPhaseRef.current = 'idle'; // Update ref
+      setIsProcessingDiarization(false); // In case summary arrives before diarized_transcript
+      return;
+    }
+
+    // Handle error messages
+    if (message.type === 'error') {
+      console.error('❌ Server error:', message.message);
+      setError(message.message || 'Unknown server error');
+      return;
+    }
+
+    // Handle other interim messages (non-final) - show as live transcript during recording
+    if (message.type === 'interim' && !message.is_final && isRecording) {
+      console.log('💬 Interim update (non-final, during recording):', {
+        transcript: message.transcript?.substring(0, 100) + '...',
       });
-      setCurrentInterim('');
-      setInterimTranscript('');
-      console.log('🧹 Cleared interim transcript after final message');
-    } 
-    // Handle interim transcriptions when not recording (shouldn't happen, but just in case)
-    else {
-      console.log('💬 Interim transcription received:', {
-        transcript: message.transcript.substring(0, 100) + '...',
-        is_final: message.is_final,
-        type: message.type,
-      });
-      setInterimTranscript(message.transcript);
-      setCurrentInterim(message.transcript);
-      console.log('✅ Updated currentInterim state:', message.transcript.substring(0, 50) + '...');
+      setLiveTranscript(message.transcript || '');
+      setCurrentInterim(message.transcript || '');
+      return;
     }
   };
 
@@ -186,6 +242,7 @@ export function useTranscription() {
           }
         }, 10000); // 10 second timeout
 
+        transcriptionService.setRecordingState(true);
         transcriptionService.connect({
           onConnected: () => {
             console.log('✅ WebSocket connected');
@@ -200,6 +257,22 @@ export function useTranscription() {
           onDisconnected: () => {
             console.log('🔌 WebSocket disconnected');
             setIsConnected(false);
+            
+            // If we were waiting for diarized_transcript and WebSocket closed,
+            // this means backend closed the connection before sending it
+            // Use setTimeout to check state after React updates
+            setTimeout(() => {
+              if (processingPhaseRef.current === 'waiting_diarized') {
+                console.warn('⚠️ WebSocket closed while waiting for diarized_transcript');
+                setDiarizationError('Connection closed before diarization completed. The backend may process it asynchronously. The transcript is still available below.');
+                setIsProcessingDiarization(false);
+                // Clear timeout since connection is closed
+                if (diarizationTimeoutRef.current) {
+                  clearTimeout(diarizationTimeoutRef.current);
+                  diarizationTimeoutRef.current = null;
+                }
+              }
+            }, 100);
           },
           onInterim: (transcript: string) => {
             // Handle interim messages (like demo.html - replaces text)
@@ -207,9 +280,9 @@ export function useTranscription() {
               transcript: transcript.substring(0, 100) + '...',
               length: transcript.length,
             });
-            setInterimTranscript(transcript);
+            setLiveTranscript(transcript);
             setCurrentInterim(transcript);
-            console.log('✅ Updated interim state via onInterim callback');
+            console.log('✅ Updated live transcript state via onInterim callback');
           },
           onSummary: (summaryData: any) => {
             // Handle summary received via WebSocket (like demo.html)
@@ -382,12 +455,34 @@ export function useTranscription() {
 
       setIsRecording(false);
 
-      // Send end_session signal to trigger summary generation (like demo.html)
+      // Send end_session signal to trigger LLM processing and diarized_transcript generation
       if (transcriptionService.isConnected()) {
-        transcriptionService.sendEndSession();
-        setIsLoadingSummary(true);
+        // Set processing state FIRST (before sending end_session)
+        // This ensures onDisconnected can detect we're waiting
+        setIsProcessingDiarization(true);
+        setProcessingPhase('waiting_diarized');
+        processingPhaseRef.current = 'waiting_diarized'; // Update ref immediately
+        setDiarizationError(null);
+        setIsLoadingSummary(true); // Also set summary loading (will be set to false when summary arrives)
         setSummaryError(null);
-        console.log('📤 Sent end_session signal, waiting for summary...');
+        
+        transcriptionService.setRecordingState(false);
+        transcriptionService.sendEndSession();
+        
+        console.log('📤 Sent end_session signal, waiting for diarized_transcript from LLM...');
+        console.log('📊 Processing phase set to:', processingPhaseRef.current);
+        
+        // Set timeout for diarized_transcript (30 seconds)
+        diarizationTimeoutRef.current = setTimeout(() => {
+          // Check current phase using ref (avoids closure issue)
+          if (processingPhaseRef.current === 'waiting_diarized') {
+            console.warn('⚠️ Timeout waiting for diarized_transcript (30 seconds)');
+            setDiarizationError('Diarization processing timed out. The backend may have closed the connection. The transcript is still available below.');
+            setIsProcessingDiarization(false);
+            // Don't change phase - keep waiting, but show error
+            // Backend might still send it late (if connection reopens)
+          }
+        }, 30000); // 30 second timeout
       } else {
         console.warn('⚠️ WebSocket not connected, cannot send end_session signal');
       }
@@ -402,11 +497,22 @@ export function useTranscription() {
   const clearTranscriptions = () => {
     setTranscriptions([]);
     setCurrentInterim('');
-    setInterimTranscript('');
+    setLiveTranscript('');
+    setDiarizedUtterances([]);
     setSummary(null);
     setCurrentTranscriptId(null);
     setSummaryError(null);
     setIsLoadingSummary(false);
+    setIsProcessingDiarization(false);
+    setProcessingPhase('idle');
+    processingPhaseRef.current = 'idle'; // Update ref
+    setDiarizationError(null);
+    
+    // Clear timeout if exists
+    if (diarizationTimeoutRef.current) {
+      clearTimeout(diarizationTimeoutRef.current);
+      diarizationTimeoutRef.current = null;
+    }
   };
 
   // Cleanup on unmount
@@ -414,6 +520,12 @@ export function useTranscription() {
     return () => {
       stopRecording();
       transcriptionService.disconnect();
+      
+      // Clear timeout on unmount
+      if (diarizationTimeoutRef.current) {
+        clearTimeout(diarizationTimeoutRef.current);
+        diarizationTimeoutRef.current = null;
+      }
     };
   }, []);
 
@@ -421,12 +533,18 @@ export function useTranscription() {
     isConnected,
     isRecording,
     transcriptions,
-    currentInterim: interimTranscript || currentInterim, // Use interimTranscript if available (from WebSocket)
+    currentInterim: liveTranscript || currentInterim, // Use liveTranscript (matching Transcribe.tsx pattern)
+    liveTranscript, // Expose liveTranscript directly (matching Transcribe.tsx)
+    diarizedUtterances, // Structured diarized utterances (matching Transcribe.tsx)
     error,
     summary,
     isLoadingSummary,
     summaryError,
     currentTranscriptId,
+    // Diarization processing state
+    isProcessingDiarization, // True while waiting for diarized_transcript from LLM
+    processingPhase, // Current processing phase: 'idle' | 'waiting_diarized' | 'waiting_summary'
+    diarizationError, // Error message if diarization times out or fails
     startRecording,
     stopRecording,
     clearTranscriptions,

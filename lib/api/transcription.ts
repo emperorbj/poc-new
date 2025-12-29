@@ -20,6 +20,8 @@ class TranscriptionService {
   private reconnectTimeout: NodeJS.Timeout | null = null;
   private isIntentionalDisconnect = false;
   private audioChunkCount = 0;
+  private isRecording = false;
+  private messageCount = 0;
 
   connect(callbacks: TranscriptionCallbacks, wsUrl?: string): void {
     this.callbacks = callbacks;
@@ -64,10 +66,21 @@ class TranscriptionService {
 
       this.ws.onmessage = (event: MessageEvent) => {
         try {
+          this.messageCount++;
+          const timestamp = new Date().toISOString();
+          const recordingStatus = this.isRecording ? '🔴 RECORDING' : '⏹️ STOPPED';
+          
           console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-          console.log('📥 WebSocket RESPONSE RECEIVED');
+          console.log(`📥 WebSocket RESPONSE #${this.messageCount} - ${recordingStatus}`);
+          console.log(`⏰ Timestamp: ${timestamp}`);
           console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-          console.log('📦 Raw message info:', {
+          
+          // Log raw message info FIRST (before any processing)
+          console.log('📦 RAW MESSAGE INFO (BEFORE PROCESSING):');
+          console.log(JSON.stringify({
+            messageNumber: this.messageCount,
+            timestamp,
+            recordingStatus: this.isRecording ? 'RECORDING' : 'STOPPED',
             dataType: typeof event.data,
             isArrayBuffer: event.data instanceof ArrayBuffer,
             isBlob: event.data instanceof Blob,
@@ -76,38 +89,72 @@ class TranscriptionService {
                        event.data instanceof Blob ? event.data.size :
                        typeof event.data === 'string' ? event.data.length : 'unknown',
             readyState: this.ws?.readyState,
-          });
+          }, null, 2));
 
           let data: string;
           if (typeof event.data === 'string') {
             data = event.data;
-            console.log('📝 Full string response:', data);
-            console.log('📝 Response length:', data.length, 'characters');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('📝 FULL RAW STRING RESPONSE (BEFORE PARSING):');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log(data);
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log(`📏 Response length: ${data.length} characters`);
+            
             try {
               const parsed = JSON.parse(data);
-              console.log('✅ Parsed JSON response:', parsed);
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+              console.log('✅ PARSED JSON RESPONSE (AFTER PARSING):');
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+              console.log(JSON.stringify(parsed, null, 2));
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
               console.log('📋 Response type:', parsed.type);
               if (parsed.transcript) {
-                console.log('💬 Transcript:', parsed.transcript.substring(0, 200) + (parsed.transcript.length > 200 ? '...' : ''));
+                console.log('💬 Transcript length:', parsed.transcript.length, 'characters');
+                console.log('💬 Full transcript content:');
+                console.log(parsed.transcript);
               }
               if (parsed.summary) {
-                console.log('📄 Summary received:', parsed.summary);
+                console.log('📄 Summary type:', typeof parsed.summary);
+                console.log('📄 Full summary content:');
+                if (typeof parsed.summary === 'string') {
+                  console.log(parsed.summary);
+                } else {
+                  console.log(JSON.stringify(parsed.summary, null, 2));
+                }
+              }
+              if (parsed.utterances) {
+                console.log('🎯 Diarized utterances count:', parsed.utterances.length);
+                console.log('🎯 Full utterances array:');
+                console.log(JSON.stringify(parsed.utterances, null, 2));
               }
             } catch (parseError) {
-              console.warn('⚠️ Response is not valid JSON:', parseError);
+              console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+              console.error('❌ JSON PARSE ERROR:');
+              console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+              console.error('Parse error:', parseError);
+              console.error('Raw data that failed to parse:', data);
             }
             this.handleMessage(data);
           } else if (event.data instanceof ArrayBuffer) {
             console.log('📦 Received ArrayBuffer, decoding to string...');
             const decoder = new TextDecoder();
             data = decoder.decode(event.data);
-            console.log('📝 Decoded ArrayBuffer response:', data);
-            console.log('📝 Response length:', data.length, 'characters');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('📝 FULL DECODED ARRAYBUFFER RESPONSE (BEFORE PARSING):');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log(data);
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log(`📏 Response length: ${data.length} characters`);
             try {
               const parsed = JSON.parse(data);
-              console.log('✅ Parsed JSON response:', parsed);
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+              console.log('✅ PARSED JSON RESPONSE (AFTER PARSING):');
+              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+              console.log(JSON.stringify(parsed, null, 2));
             } catch (parseError) {
-              console.warn('⚠️ Response is not valid JSON:', parseError);
+              console.error('❌ JSON PARSE ERROR:', parseError);
+              console.error('Raw data that failed to parse:', data);
             }
             this.handleMessage(data);
           } else if (event.data instanceof Blob) {
@@ -115,13 +162,21 @@ class TranscriptionService {
             const reader = new FileReader();
             reader.onload = () => {
               if (typeof reader.result === 'string') {
-                console.log('📝 Blob converted to string response:', reader.result);
-                console.log('📝 Response length:', reader.result.length, 'characters');
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                console.log('📝 FULL BLOB CONVERTED TO STRING RESPONSE (BEFORE PARSING):');
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                console.log(reader.result);
+                console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                console.log(`📏 Response length: ${reader.result.length} characters`);
                 try {
                   const parsed = JSON.parse(reader.result);
-                  console.log('✅ Parsed JSON response:', parsed);
+                  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                  console.log('✅ PARSED JSON RESPONSE (AFTER PARSING):');
+                  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                  console.log(JSON.stringify(parsed, null, 2));
                 } catch (parseError) {
-                  console.warn('⚠️ Response is not valid JSON:', parseError);
+                  console.error('❌ JSON PARSE ERROR:', parseError);
+                  console.error('Raw data that failed to parse:', reader.result);
                 }
                 this.handleMessage(reader.result);
               } else {
@@ -138,15 +193,23 @@ class TranscriptionService {
             return;
           }
           console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+          console.log(`✅ Message #${this.messageCount} processing complete`);
+          console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         } catch (error) {
-          console.error('❌ Error processing WebSocket response:', error);
-          console.error('Error details:', {
-            error,
-            errorMessage: error instanceof Error ? error.message : String(error),
-            errorStack: error instanceof Error ? error.stack : undefined,
-            eventData: event.data,
-            eventDataType: typeof event.data,
-          });
+          console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+          console.error('❌ ERROR PROCESSING WebSocket RESPONSE:');
+          console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+          console.error('Error object:', error);
+          console.error('Error message:', error instanceof Error ? error.message : String(error));
+          console.error('Error stack:', error instanceof Error ? error.stack : undefined);
+          console.error('Event data:', event.data);
+          console.error('Event data type:', typeof event.data);
+          console.error('Event data (first 1000 chars):', 
+            typeof event.data === 'string' ? event.data.substring(0, 1000) : 
+            event.data instanceof ArrayBuffer ? `ArrayBuffer(${event.data.byteLength} bytes)` :
+            event.data instanceof Blob ? `Blob(${event.data.size} bytes)` :
+            String(event.data).substring(0, 1000));
+          console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
           this.callbacks?.onError('Failed to process transcription message');
         }
       };
@@ -206,6 +269,14 @@ class TranscriptionService {
         console.log('🔌 WebSocket CLOSED');
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         console.log('Close details:', closeInfo);
+        
+        // Check if we were waiting for diarized_transcript when WebSocket closed
+        // This happens if backend closes WebSocket before sending diarized_transcript
+        if (this.isRecording === false && this.callbacks) {
+          // We stopped recording but WebSocket closed before diarized_transcript arrived
+          console.warn('⚠️ WebSocket closed while waiting for diarized_transcript');
+          // The hook will handle this via onDisconnected callback
+        }
         
         // WebSocket close codes reference
         const closeCodeMeanings: Record<number, string> = {
@@ -279,10 +350,14 @@ class TranscriptionService {
   private handleMessage(data: string): void {
     try {
       const message: TranscriptionMessage = JSON.parse(data);
+      const recordingStatus = this.isRecording ? '🔴 RECORDING' : '⏹️ STOPPED';
+      
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('🔍 Processing WebSocket Response');
+      console.log(`🔍 Processing WebSocket Response - ${recordingStatus}`);
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('📨 Message details:', {
+      console.log('📨 Message summary:', {
+        messageNumber: this.messageCount,
+        recordingStatus: this.isRecording ? 'RECORDING' : 'STOPPED',
         type: message.type,
         hasTranscript: !!message.transcript,
         transcriptLength: message.transcript?.length || 0,
@@ -291,13 +366,40 @@ class TranscriptionService {
         transcript_id: message.transcript_id,
         confidence: message.confidence,
         speaker_tag: message.speaker_tag,
+        hasUtterances: !!message.utterances,
+        utterancesCount: message.utterances?.length || 0,
       });
-      console.log('📋 Full message object:', JSON.stringify(message, null, 2));
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('📋 FULL MESSAGE OBJECT (COMPLETE):');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log(JSON.stringify(message, null, 2));
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      
       if (message.transcript) {
-        console.log('💬 Transcript content:', message.transcript);
+        console.log('💬 FULL TRANSCRIPT CONTENT:');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log(message.transcript);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log(`💬 Transcript length: ${message.transcript.length} characters`);
       }
+      
       if (message.summary) {
-        console.log('📄 Summary content:', typeof message.summary === 'string' ? message.summary : JSON.stringify(message.summary, null, 2));
+        console.log('📄 FULL SUMMARY CONTENT:');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        if (typeof message.summary === 'string') {
+          console.log(message.summary);
+        } else {
+          console.log(JSON.stringify(message.summary, null, 2));
+        }
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      }
+      
+      if (message.utterances && message.utterances.length > 0) {
+        console.log('🎯 FULL DIARIZED UTTERANCES ARRAY:');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log(JSON.stringify(message.utterances, null, 2));
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log(`🎯 Utterances count: ${message.utterances.length}`);
       }
 
       if (message.type === 'interim') {
@@ -332,6 +434,18 @@ class TranscriptionService {
           is_final: message.is_final,
           hasTranscript: !!message.transcript,
         });
+        this.callbacks?.onTranscription(message);
+      } else if (message.type === 'diarized_transcript') {
+        // Handle diarized transcript messages (structured format with utterances)
+        console.log('🎯 Processing as type: diarized_transcript', {
+          hasUtterances: !!message.utterances,
+          utterancesCount: message.utterances?.length || 0,
+          hasTranscript: !!message.transcript,
+        });
+        if (message.utterances && message.utterances.length > 0) {
+          console.log('📋 Diarized utterances:', JSON.stringify(message.utterances, null, 2));
+        }
+        // Pass to onTranscription callback - the hook will handle the structured format
         this.callbacks?.onTranscription(message);
       } else if (message.type === 'error') {
         const errorMessage = message.message || 'Unknown server error';
@@ -412,6 +526,21 @@ class TranscriptionService {
     }
   }
 
+  setRecordingState(isRecording: boolean): void {
+    this.isRecording = isRecording;
+    if (isRecording) {
+      this.messageCount = 0; // Reset message count when starting new recording
+    }
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log(`🎙️ Recording state changed: ${isRecording ? '🔴 STARTED' : '⏹️ STOPPED'}`);
+    if (isRecording) {
+      console.log('📊 Message counter reset to 0');
+    } else {
+      console.log(`📊 Total messages received in this session: ${this.messageCount}`);
+    }
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  }
+
   sendEndSession(): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.warn('⚠️ WebSocket not open, cannot send end_session signal');
@@ -419,10 +548,21 @@ class TranscriptionService {
     }
 
     try {
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log('📤 Sending end_session signal to trigger summary generation');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      this.isRecording = false; // Mark as stopped when sending end_session
       this.ws.send(JSON.stringify({ type: 'end_session' }));
+      console.log('✅ end_session signal sent successfully');
+      console.log('⏳ Waiting for summary response...');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     } catch (error) {
-      console.error('❌ Error sending end_session signal:', error);
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error('❌ Error sending end_session signal:');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error('Error:', error);
+      console.error('Error message:', error instanceof Error ? error.message : String(error));
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     }
   }
 
