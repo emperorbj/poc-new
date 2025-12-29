@@ -59,10 +59,6 @@ export default function TranscriptionPage() {
     isLoadingSummary,
     summaryError,
     currentTranscriptId,
-    // Diarization processing state
-    isProcessingDiarization,
-    processingPhase,
-    diarizationError,
     startRecording,
     stopRecording,
     clearTranscriptions,
@@ -555,29 +551,6 @@ export default function TranscriptionPage() {
           </Card>
         )}
 
-        {/* Processing Diarization Loading State - Shows while waiting for LLM to process */}
-        {isProcessingDiarization && processingPhase === 'waiting_diarized' && (
-          <Card className="p-4">
-            <div className="flex items-center justify-center gap-3 p-6 bg-blue-50 rounded-lg border-2 border-blue-200">
-              <Loader2 className="w-6 h-6 text-blue-600 animate-spin" />
-              <div className="text-center">
-                <p className="text-lg font-semibold text-blue-800">
-                  Processing Conversation with AI...
-                </p>
-                <p className="text-sm text-blue-600 mt-1">
-                  Separating speakers and organizing the transcript
-                </p>
-              </div>
-            </div>
-            {diarizationError && (
-              <Alert variant="destructive" className="mt-3">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>{diarizationError}</AlertDescription>
-              </Alert>
-            )}
-          </Card>
-        )}
-
         {/* Final Diarized Transcript Display - Shows structured conversation with Doctor/Patient labels (matching Transcribe.tsx pattern) */}
         {diarizedUtterances.length > 0 && (
           <Card className="p-4">
@@ -586,11 +559,6 @@ export default function TranscriptionPage() {
                 <FileText className="w-5 h-5" />
                 Conversation Transcript
               </h2>
-              {processingPhase === 'waiting_summary' && (
-                <Badge variant="outline" className="bg-yellow-100 text-yellow-700">
-                  Processing Summary...
-                </Badge>
-              )}
               {isRecording && (
                 <Badge variant="outline" className="bg-blue-100 text-blue-700">
                   Live

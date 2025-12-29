@@ -270,14 +270,6 @@ class TranscriptionService {
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         console.log('Close details:', closeInfo);
         
-        // Check if we were waiting for diarized_transcript when WebSocket closed
-        // This happens if backend closes WebSocket before sending diarized_transcript
-        if (this.isRecording === false && this.callbacks) {
-          // We stopped recording but WebSocket closed before diarized_transcript arrived
-          console.warn('⚠️ WebSocket closed while waiting for diarized_transcript');
-          // The hook will handle this via onDisconnected callback
-        }
-        
         // WebSocket close codes reference
         const closeCodeMeanings: Record<number, string> = {
           1000: 'Normal Closure',

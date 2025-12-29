@@ -62,17 +62,10 @@ export function useTranscription() {
   const [liveTranscript, setLiveTranscript] = useState(''); // Streaming transcript (plain text, accumulated by BE)
   const [diarizedUtterances, setDiarizedUtterances] = useState<DiarizedUtterance[]>([]); // Final diarized transcript (structured)
 
-  // Diarization processing state
-  const [isProcessingDiarization, setIsProcessingDiarization] = useState(false);
-  const [processingPhase, setProcessingPhase] = useState<'idle' | 'waiting_diarized' | 'waiting_summary'>('idle');
-  const [diarizationError, setDiarizationError] = useState<string | null>(null);
-
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const streamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const diarizationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const processingPhaseRef = useRef<'idle' | 'waiting_diarized' | 'waiting_summary'>('idle');
 
   // Helper function to map speaker tag to label
   const getSpeakerLabel = (speaker: string | number | undefined): string => {
@@ -105,10 +98,10 @@ export function useTranscription() {
     }
 
     // Handle status messages
-    if (message.type === 'status') {
-      console.log('📊 Status message:', message.message);
-      return;
-    }
+    // if (message.type === 'status') {
+    //   console.log('📊 Status message:', message.message);
+    //   return;
+    // }
 
     /**
      * STREAMING - Matching Transcribe.tsx pattern
@@ -128,29 +121,14 @@ export function useTranscription() {
     /**
      * FINAL DIARIZED TRANSCRIPT - Matching Transcribe.tsx pattern
      * This REPLACES streaming transcript entirely.
-     * Received after end_session is sent and backend processes with LLM.
      */
     if (message.type === 'diarized_transcript') {
       console.log('🎯 Processing diarized transcript with', message.utterances?.length || 0, 'utterances');
-      
-      // Clear timeout if it was set
-      if (diarizationTimeoutRef.current) {
-        clearTimeout(diarizationTimeoutRef.current);
-        diarizationTimeoutRef.current = null;
-      }
-      
-      // Update processing state
-      setIsProcessingDiarization(false);
-      setProcessingPhase('waiting_summary'); // Next we wait for summary
-      processingPhaseRef.current = 'waiting_summary'; // Update ref
-      setDiarizationError(null);
       
       if (message.utterances && message.utterances.length > 0) {
         // Replace utterances (like Transcribe.tsx)
         setDiarizedUtterances(message.utterances);
         setLiveTranscript(''); // streaming phase ends here
-        
-        console.log('✅ Diarized transcript received and processed. Waiting for summary...');
         
         // Also convert to TranscriptionResult format for backward compatibility
         message.utterances.forEach((utterance) => {
@@ -175,15 +153,12 @@ export function useTranscription() {
             return [...prev, newTranscription];
           });
         });
-      } else {
-        console.warn('⚠️ diarized_transcript received but no utterances in message');
       }
       return;
     }
 
     /**
      * SUMMARY - Matching Transcribe.tsx pattern
-     * Received after diarized_transcript (or directly if diarization skipped)
      */
     if (message.type === 'summary') {
       console.log('📄 Summary received via WebSocket');
@@ -192,9 +167,6 @@ export function useTranscription() {
         : message.summary;
       setSummary(summaryData);
       setIsLoadingSummary(false);
-      setProcessingPhase('idle'); // Processing complete
-      processingPhaseRef.current = 'idle'; // Update ref
-      setIsProcessingDiarization(false); // In case summary arrives before diarized_transcript
       return;
     }
 
@@ -257,22 +229,6 @@ export function useTranscription() {
           onDisconnected: () => {
             console.log('🔌 WebSocket disconnected');
             setIsConnected(false);
-            
-            // If we were waiting for diarized_transcript and WebSocket closed,
-            // this means backend closed the connection before sending it
-            // Use setTimeout to check state after React updates
-            setTimeout(() => {
-              if (processingPhaseRef.current === 'waiting_diarized') {
-                console.warn('⚠️ WebSocket closed while waiting for diarized_transcript');
-                setDiarizationError('Connection closed before diarization completed. The backend may process it asynchronously. The transcript is still available below.');
-                setIsProcessingDiarization(false);
-                // Clear timeout since connection is closed
-                if (diarizationTimeoutRef.current) {
-                  clearTimeout(diarizationTimeoutRef.current);
-                  diarizationTimeoutRef.current = null;
-                }
-              }
-            }, 100);
           },
           onInterim: (transcript: string) => {
             // Handle interim messages (like demo.html - replaces text)
@@ -455,34 +411,13 @@ export function useTranscription() {
 
       setIsRecording(false);
 
-      // Send end_session signal to trigger LLM processing and diarized_transcript generation
+      // Send end_session signal to trigger summary generation (like demo.html)
       if (transcriptionService.isConnected()) {
-        // Set processing state FIRST (before sending end_session)
-        // This ensures onDisconnected can detect we're waiting
-        setIsProcessingDiarization(true);
-        setProcessingPhase('waiting_diarized');
-        processingPhaseRef.current = 'waiting_diarized'; // Update ref immediately
-        setDiarizationError(null);
-        setIsLoadingSummary(true); // Also set summary loading (will be set to false when summary arrives)
-        setSummaryError(null);
-        
         transcriptionService.setRecordingState(false);
         transcriptionService.sendEndSession();
-        
-        console.log('📤 Sent end_session signal, waiting for diarized_transcript from LLM...');
-        console.log('📊 Processing phase set to:', processingPhaseRef.current);
-        
-        // Set timeout for diarized_transcript (30 seconds)
-        diarizationTimeoutRef.current = setTimeout(() => {
-          // Check current phase using ref (avoids closure issue)
-          if (processingPhaseRef.current === 'waiting_diarized') {
-            console.warn('⚠️ Timeout waiting for diarized_transcript (30 seconds)');
-            setDiarizationError('Diarization processing timed out. The backend may have closed the connection. The transcript is still available below.');
-            setIsProcessingDiarization(false);
-            // Don't change phase - keep waiting, but show error
-            // Backend might still send it late (if connection reopens)
-          }
-        }, 30000); // 30 second timeout
+        setIsLoadingSummary(true);
+        setSummaryError(null);
+        console.log('📤 Sent end_session signal, waiting for summary...');
       } else {
         console.warn('⚠️ WebSocket not connected, cannot send end_session signal');
       }
@@ -503,16 +438,6 @@ export function useTranscription() {
     setCurrentTranscriptId(null);
     setSummaryError(null);
     setIsLoadingSummary(false);
-    setIsProcessingDiarization(false);
-    setProcessingPhase('idle');
-    processingPhaseRef.current = 'idle'; // Update ref
-    setDiarizationError(null);
-    
-    // Clear timeout if exists
-    if (diarizationTimeoutRef.current) {
-      clearTimeout(diarizationTimeoutRef.current);
-      diarizationTimeoutRef.current = null;
-    }
   };
 
   // Cleanup on unmount
@@ -520,12 +445,6 @@ export function useTranscription() {
     return () => {
       stopRecording();
       transcriptionService.disconnect();
-      
-      // Clear timeout on unmount
-      if (diarizationTimeoutRef.current) {
-        clearTimeout(diarizationTimeoutRef.current);
-        diarizationTimeoutRef.current = null;
-      }
     };
   }, []);
 
@@ -541,10 +460,6 @@ export function useTranscription() {
     isLoadingSummary,
     summaryError,
     currentTranscriptId,
-    // Diarization processing state
-    isProcessingDiarization, // True while waiting for diarized_transcript from LLM
-    processingPhase, // Current processing phase: 'idle' | 'waiting_diarized' | 'waiting_summary'
-    diarizationError, // Error message if diarization times out or fails
     startRecording,
     stopRecording,
     clearTranscriptions,

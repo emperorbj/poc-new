@@ -12,7 +12,7 @@ export const API_ENDPOINTS = {
 };
 
 export const WS_ENDPOINTS = {
-  TRANSCRIPTION: 'wss://meera-bot-v2.onrender.com/api/v1/transcription/ws/transcribe',
+  TRANSCRIPTION: 'wss://meera-bot.onrender.com/api/v1/transcription/ws/transcribe',
 };
 
 export const COLORS = {
